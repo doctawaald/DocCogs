@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands, tasks
 
-class AutoDisconnect(commands.Cog):
+class ManageOtherBots(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.check_voice_channels.start()
@@ -13,25 +13,28 @@ class AutoDisconnect(commands.Cog):
     async def check_voice_channels(self):
         for guild in self.bot.guilds:
             for voice_channel in guild.voice_channels:
-                # Controleer of de bot in het voicekanaal zit
-                if any(member.id == self.bot.user.id for member in voice_channel.members):
-                    # Haal alle rollen van gebruikers in het kanaal
-                    roles_in_channel = {
-                        role for member in voice_channel.members for role in member.roles
-                    }
+                # Controleer of er gebruikers in het kanaal zitten met de specifieke rol
+                target_role = discord.utils.get(guild.roles, name="✅ Member")  # Vervang met de juiste rolnaam
+                role_members = [
+                    member for member in voice_channel.members if target_role in member.roles
+                ]
 
-                    # Controleer of een specifieke rol aanwezig is
-                    target_role = discord.utils.get(guild.roles, name="✅ Member")
-                    if target_role not in roles_in_channel:
-                        # Disconnect de bot als de rol niet meer aanwezig is
-                        vc = discord.utils.get(self.bot.voice_clients, guild=guild)
-                        if vc and vc.channel == voice_channel:
-                            await vc.disconnect()
-                            print(f"Bot disconnected from {voice_channel.name} in {guild.name}.")
+                # Als niemand met de rol in het kanaal is, disconnect bots
+                if not role_members:
+                    for member in voice_channel.members:
+                        if member.bot and member != self.bot.user:  # Controleer dat het een andere bot is
+                            try:
+                                await member.move_to(None)  # Disconnect de bot
+                                print(f"Disconnected bot {member.name} from {voice_channel.name} in {guild.name}.")
+                            except discord.Forbidden:
+                                print(f"Geen toestemming om {member.name} te disconnecten.")
+                            except discord.HTTPException as e:
+                                print(f"Fout bij disconnecten van {member.name}: {e}")
 
     @check_voice_channels.before_loop
     async def before_check_voice_channels(self):
         await self.bot.wait_until_ready()
 
 async def setup(bot):
-    await bot.add_cog(AutoDisconnect(bot))
+    await bot.add_cog(ManageOtherBots(bot))
+
