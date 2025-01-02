@@ -28,14 +28,19 @@ class BotVoiceDisconnect(commands.Cog):
                                 await bot_member.move_to(None)
                                 await channel.send(f"{bot_member.name} is gedisconnect omdat er geen gebruikers met de rol ✅ Member meer zijn.")
     
-    @commands.command(name="force_disconnect")
-    @commands.has_permissions(administrator=True)
-    async def force_disconnect(self, ctx):
-        """Forceer de bot om te disconnecten uit een voice kanaal."""
-        for channel in ctx.guild.voice_channels:
-            for bot_member in channel.members:
-                if bot_member.bot:
-                    await bot_member.move_to(None)
-                    await ctx.send(f"{bot_member.name} is gedisconnect.")
-                    return
+@commands.command(name="force_disconnect")
+@commands.has_permissions(administrator=True)
+async def force_disconnect(self, ctx):
+    """Forceer de bot om te disconnecten uit een voice kanaal."""
+    bots_disconnected = False
+    for channel in ctx.guild.voice_channels:
+        # Loop door de leden in het kanaal en disconnect alle bots
+        for bot_member in channel.members:
+            if bot_member.bot:
+                await bot_member.move_to(None)
+                bots_disconnected = True
+                await ctx.send(f"{bot_member.name} is gedisconnect.")
+    
+    if not bots_disconnected:
         await ctx.send("Er zijn geen bots om te disconnecten.")
+
