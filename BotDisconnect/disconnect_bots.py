@@ -1,45 +1,38 @@
-from redbot.core import commands
+from redbot.core import commands, Cog
 from discord.ext import tasks
+import discord
 
-class DisconnectBots(commands.Cog):
+class DisconnectBots(Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.check_vacant_channels.start()  # Start de taak om kanalen te controleren
+        self.check_bots.start()
 
-    @tasks.loop(minutes=5)  # Controleer elke 5 minuten
-    async def check_vacant_channels(self):
-        for guild in self.bot.guilds:
-            for channel in guild.voice_channels:
-                # Verkrijg alle leden met de opgegeven roleid
-                members_with_role = [member for member in channel.members if '1188440119624085614' in [role.id for role in member.roles]]
-                
-                # Als er geen leden zijn met de juiste rol, laat de bots disconnecten
-                if not members_with_role:
-                    for bot in channel.members:
-                        if bot.bot:  # Controleer of de member een bot is
-                            await bot.move_to(None)  # Verplaats de bot uit het kanaal
+    def cog_unload(self):
+        self.check_bots.cancel()
+
+    @tasks.loop(minutes=5)
+    async def check_bots(self):
+        for channel in self.bot.guilds[0].voice_channels:  # Verkrijgt de voice kanalen van de eerste guild
+            # Haal alle leden op die in het kanaal zijn
+            members_in_channel = [member for member in channel.members if member.guild_permissions.administrator is False]
+
+            # Check als er geen leden met de specifieke roleid 1188440119624085614 meer zijn
+            if not any(role.id == 1188440119624085614 for member in members_in_channel for role in member.roles):
+                # Als er geen leden meer zijn, disconnect de bot uit het kanaal
+                for bot in channel.guild.members:
+                    if bot.bot:  # Controleer of het een bot is en als deze in het kanaal is
+                        if bot in channel.members:
+                            await bot.move_to(None)  # Bot verlaat het kanaal
 
     @commands.command()
-    async def test_disconnect(self, ctx):
-        """Test de disconnect functie door een kanaal te controleren."""
+    async def force_disconnect(self, ctx):
+        """Forces the disconnection of bots from voice channels with no users having roleid 1188440119624085614."""
         for channel in ctx.guild.voice_channels:
-            # Verkrijg alle leden met de opgegeven roleid
-            members_with_role = [member for member in channel.members if '1188440119624085614' in [role.id for role in member.roles]]
-            
-            if not members_with_role:
-                await ctx.send(f"Geen leden met de rol in kanaal {channel.name}. Bots zullen disconnecten.")
-                for bot in channel.members:
-                    if bot.bot:
-                        await bot.move_to(None)
-                break
-        else:
-            await ctx.send("Geen kanalen gevonden zonder leden met de opgegeven rol.")
+            members_in_channel = [member for member in channel.members if member.guild_permissions.administrator is False]
 
-    @commands.Cog.listener()
-    async def on_ready(self):
-        """Bevestig dat de cog geladen is en start de check."""
-        print(f"{self.bot.user} is klaar om bots te disconnecten!")
-
-# Deze setup functie is vereist door Redbot om de cog correct in de bot te laden
-def setup(bot):
-    bot.add_cog(DisconnectBots(bot))
+            if not any(role.id == 1188440119624085614 for member in members_in_channel for role in member.roles):
+                for bot in channel.guild.members:
+                    if bot.bot:  # Controleer of het een bot is en als deze in het kanaal is
+                        if bot in channel.members:
+                            await bot.move_to(None)  # Bot verlaat het kanaal
+                await ctx.send(f"Bots disconnected from {channel.name}.")
