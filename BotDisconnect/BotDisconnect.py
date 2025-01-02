@@ -34,7 +34,3 @@ class ManageOtherBots(commands.Cog):  # Zorg ervoor dat het erft van commands.Co
     @check_voice_channels.before_loop
     async def before_check_voice_channels(self):
         await self.bot.wait_until_ready()
-
-async def setup(bot):
-    await bot.add_cog(ManageOtherBots(bot))
-
