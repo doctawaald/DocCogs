@@ -1,8 +1,8 @@
-from redbot.core import commands, Cog
+from redbot.core import commands
 from discord.ext import tasks
 import discord
 
-class DisconnectBots(Cog):
+class DisconnectBots(commands.Cog):  # Verander 'Cog' naar 'commands.Cog'
     def __init__(self, bot):
         self.bot = bot
         self.check_bots.start()
