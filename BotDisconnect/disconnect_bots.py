@@ -5,19 +5,18 @@ import discord
 class DisconnectBots(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.bot_ready = False
-        self.check_bots.start()  # Start de taak direct, maar niet als de bot nog niet klaar is
+        self.bot_ready = False  # Variable to track if bot is ready
 
     async def cog_load(self):
-        """Wacht totdat de bot volledig verbonden is voor het starten van de taak."""
-        await self.bot.wait_until_ready()  # Dit zorgt ervoor dat de taak pas start als de bot volledig is geladen
+        """Start de taak pas als de bot volledig is geladen."""
+        await self.bot.wait_until_ready()  # Wacht tot de bot klaar is
         self.bot_ready = True
-        self.check_bots.start()
+        self.check_bots.start()  # Start de taak pas als de bot klaar is
 
     def cog_unload(self):
-        """Stop de taak wanneer de cog wordt verwijderd."""
+        """Stop de taak als de cog wordt verwijderd."""
         if self.bot_ready:
-            self.check_bots.cancel()
+            self.check_bots.cancel()  # Stop de taak wanneer de cog wordt unloaded
 
     @tasks.loop(minutes=5)
     async def check_bots(self):
