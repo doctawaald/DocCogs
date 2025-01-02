@@ -1,0 +1,12 @@
+{
+    "author": ["dOCTAWAALd"],
+    "name": "BotDisconnect",
+    "install_msg": "Thank you for installing BotDisconnect!",
+    "short": "Disconnects bot in a voice-channel if no users are left.",
+    "description": "Disconnects bot in a voice-channel if no users are left.",
+    "tags": [
+        "bots",
+        "management"
+    ],
+    "end_user_data_statement": "This cog does not persistently store data or metadata about users."
+}
