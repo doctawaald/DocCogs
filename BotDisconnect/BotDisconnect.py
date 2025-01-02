@@ -1,37 +1,41 @@
+from redbot.core import commands, Config
+from discord.ext import tasks
 import discord
-from discord.ext import commands, tasks
 
-class ManageOtherBots(commands.Cog):  # Correcte erfstructuur van commands.Cog
+class BotVoiceDisconnect(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.check_voice_channels.start()
+        self.config = Config.get_conf(self, 0)
+        self.check_voice_activity.start()
 
     def cog_unload(self):
-        self.check_voice_channels.cancel()
+        self.check_voice_activity.cancel()
 
-    @tasks.loop(seconds=30)
-    async def check_voice_channels(self):
+    @tasks.loop(seconds=60)  # Elke minuut checken
+    async def check_voice_activity(self):
         for guild in self.bot.guilds:
-            for voice_channel in guild.voice_channels:
-                target_role = discord.utils.get(guild.roles, name="✅ Member")  # Pas dit aan naar de juiste rol
-                role_members = [
-                    member for member in voice_channel.members if target_role in member.roles
-                ]
-
-                if not role_members:
-                    for member in voice_channel.members:
-                        if member.bot and member != self.bot.user:
-                            try:
-                                await member.move_to(None)  # Disconnect de bot
-                                print(f"Disconnected bot {member.name} from {voice_channel.name} in {guild.name}.")
-                            except discord.Forbidden:
-                                print(f"Geen toestemming om {member.name} te disconnecten.")
-                            except discord.HTTPException as e:
-                                print(f"Fout bij disconnecten van {member.name}: {e}")
-
-    @check_voice_channels.before_loop
-    async def before_check_voice_channels(self):
-        await self.bot.wait_until_ready()
-
-async def setup(bot):
-    await bot.add_cog(ManageOtherBots(bot))  # Voeg de cog correct toe
+            for channel in guild.voice_channels:
+                # Kijk of er bots in het kanaal zitten
+                if any(member.bot for member in channel.members):
+                    # Check of er leden met de rol ✅ Member aanwezig zijn
+                    member_with_role = any(
+                        member for member in channel.members if '✅ Member' in [role.name for role in member.roles]
+                    )
+                    if not member_with_role:
+                        # Haal de bot uit het kanaal als er geen leden met de rol ✅ Member zijn
+                        for bot_member in channel.members:
+                            if bot_member.bot:
+                                await bot_member.move_to(None)
+                                await channel.send(f"{bot_member.name} is gedisconnect omdat er geen gebruikers met de rol ✅ Member meer zijn.")
+    
+    @commands.command(name="force_disconnect")
+    @commands.has_permissions(administrator=True)
+    async def force_disconnect(self, ctx):
+        """Forceer de bot om te disconnecten uit een voice kanaal."""
+        for channel in ctx.guild.voice_channels:
+            for bot_member in channel.members:
+                if bot_member.bot:
+                    await bot_member.move_to(None)
+                    await ctx.send(f"{bot_member.name} is gedisconnect.")
+                    return
+        await ctx.send("Er zijn geen bots om te disconnecten.")
