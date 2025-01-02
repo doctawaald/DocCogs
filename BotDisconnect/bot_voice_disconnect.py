@@ -1,7 +1,7 @@
 from discord.ext import commands, tasks
 import discord
 
-class BotVoiceDisconnect(commands.Cog):
+class BotVoiceDisconnect(commands.Cog):  # Zorg ervoor dat de class van commands.Cog erft
     def __init__(self, bot):
         self.bot = bot
         self.check_voice_activity.start()
