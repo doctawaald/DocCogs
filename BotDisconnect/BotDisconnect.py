@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands, tasks
 
-class ManageOtherBots(commands.Cog):
+class ManageOtherBots(commands.Cog):  # Zorg ervoor dat het erft van commands.Cog
     def __init__(self, bot):
         self.bot = bot
         self.check_voice_channels.start()
