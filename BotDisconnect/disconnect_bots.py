@@ -6,20 +6,16 @@ class DisconnectBots(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.bot_ready = False
+        self.check_bots.start()  # Start de taak direct, maar niet als de bot nog niet klaar is
 
     async def cog_load(self):
-        """Zorg ervoor dat de taak pas start als de bot verbonden is."""
-        if self.bot.is_ready():
-            self.bot_ready = True
-            self.check_bots.start()
-        else:
-            # Wacht tot de bot volledig verbonden is voordat je de taak start
-            await self.bot.wait_until_ready()
-            self.bot_ready = True
-            self.check_bots.start()
+        """Wacht totdat de bot volledig verbonden is voor het starten van de taak."""
+        await self.bot.wait_until_ready()  # Dit zorgt ervoor dat de taak pas start als de bot volledig is geladen
+        self.bot_ready = True
+        self.check_bots.start()
 
     def cog_unload(self):
-        """Stop de taak als de cog wordt verwijderd."""
+        """Stop de taak wanneer de cog wordt verwijderd."""
         if self.bot_ready:
             self.check_bots.cancel()
 
@@ -37,7 +33,7 @@ class DisconnectBots(commands.Cog):
 
     @commands.command()
     async def force_disconnect(self, ctx):
-        """Forces the disconnection of bots from voice channels with no users having roleid 1188440119624085614."""
+        """Forceert het disconnecten van bots uit voice kanalen zonder leden met de specifieke rol."""
         for channel in ctx.guild.voice_channels:
             members_in_channel = [member for member in channel.members if member.guild_permissions.administrator is False]
 
