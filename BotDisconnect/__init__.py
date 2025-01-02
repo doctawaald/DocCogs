@@ -1,4 +1,4 @@
-from .BotDisconnect import ManageOtherBots  # Importeer de class met de juiste naam
+from .bot_voice_disconnect import BotVoiceDisconnect
 
 async def setup(bot):
-    await bot.add_cog(ManageOtherBots(bot))  # Zorg ervoor dat de cog goed wordt toegevoegd
+    await bot.add_cog(BotVoiceDisconnect(bot))
