@@ -5,7 +5,7 @@ import discord
 class DisconnectNoMembers(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.check_voice_activity.start()
+        self.check_voice_activity.start()  # Start de taak die de activiteit in stemkanalen controleert
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
