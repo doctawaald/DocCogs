@@ -56,3 +56,7 @@ class BotVoiceDisconnect(commands.Cog):  # Zorg ervoor dat de class van commands
             await ctx.send("Er zijn geen bots om te disconnecten.")
         else:
             await ctx.send("Alle bots die gedisconnect moesten worden, zijn nu uit de kanalen gehaald.")
+
+# Zorg ervoor dat je de setup functie correct hebt ingesteld
+async def setup(bot):
+    await bot.add_cog(BotVoiceDisconnect(bot))
