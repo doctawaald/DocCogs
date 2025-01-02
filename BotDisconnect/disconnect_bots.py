@@ -1,4 +1,3 @@
-import discord
 from redbot.core import commands
 from discord.ext import tasks
 
@@ -40,6 +39,7 @@ class DisconnectBots(commands.Cog):
     async def on_ready(self):
         """Bevestig dat de cog geladen is en start de check."""
         print(f"{self.bot.user} is klaar om bots te disconnecten!")
-    
+
+# Deze setup functie is vereist door Redbot om de cog correct in de bot te laden
 def setup(bot):
     bot.add_cog(DisconnectBots(bot))
