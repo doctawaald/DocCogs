@@ -1,4 +1,4 @@
-from .disconnect_bots import DisconnectBots
+from .botkicker import BotKicker
 
-def setup(bot):
-    bot.add_cog(DisconnectBots(bot))  # Geen 'await' hier, dit is synchroon
+async def setup(bot):
+    await bot.add_cog(BotKicker(bot))
