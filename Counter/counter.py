@@ -1,6 +1,6 @@
 import discord
 from redbot.core import commands, Config
-from redbot.core.utils.checks import mod_or_permissions
+from redbot.core.commands import checks  # Updated import path
 
 class Counter(commands.Cog):
     """Channel-specific counter cog"""
@@ -37,7 +37,7 @@ class Counter(commands.Cog):
         await ctx.send(f"📊 Current count: **{count}**")
 
     @commands.command()
-    @mod_or_permissions(manage_messages=True)
+    @checks.mod_or_permissions(manage_messages=True)  # Updated decorator
     async def edit(self, ctx, number: int):
         """Edit the current count (Mod only)"""
         if not await self.config.channel(ctx.channel).enabled():
@@ -59,7 +59,7 @@ class Counter(commands.Cog):
         await ctx.send(f"✅ Count updated to **{number}**!")
 
     @commands.command()
-    @mod_or_permissions(manage_messages=True)
+    @checks.mod_or_permissions(manage_messages=True)  # Updated decorator
     async def remove(self, ctx):
         """Remove the counter (Mod only)"""
         if not await self.config.channel(ctx.channel).enabled():
