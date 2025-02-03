@@ -1,7 +1,7 @@
 from redbot.core import commands, Config
 import discord
 
-class PlusOneCounter(commands.Cog):
+class Counter(commands.Cog):
     """Maintains a counter for +1 reactions in a specific channel"""
     
     def __init__(self, bot):
@@ -21,21 +21,16 @@ class PlusOneCounter(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        # Ignore bot messages and messages without +1
         if message.author.bot or message.content.strip() != "+1":
             return
 
-        # Get configured channel ID
         channel_id = await self.config.channel_id()
         
-        # Check if message is in the correct channel
         if channel_id and message.channel.id == channel_id:
-            # Atomic increment
             async with self.config.counter() as counter:
                 counter += 1
                 total = counter
             
-            # Send response
             await message.channel.send(f"Counter updated! Total +1's: **{total}**")
 
     @commands.command()
@@ -45,4 +40,4 @@ class PlusOneCounter(commands.Cog):
         await ctx.send(f"Total +1's counted: **{count}**")
 
 async def setup(bot):
-    await bot.add_cog(PlusOneCounter(bot))
+    await bot.add_cog(Counter(bot))
