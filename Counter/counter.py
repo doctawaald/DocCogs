@@ -1,7 +1,7 @@
 from redbot.core import commands, Config
 import discord
 
-class CounterCog(commands.Cog):
+class Counter(commands.Cog):
     """A cog that counts "+1" messages in specific channels."""
 
     def __init__(self, bot):
@@ -66,4 +66,4 @@ class CounterCog(commands.Cog):
             await self.config.channel(channel).message_id.set(new_message.id)
 
 async def setup(bot):
-    bot.add_cog(CounterCog(bot))
+    bot.add_cog(Counter(bot))
