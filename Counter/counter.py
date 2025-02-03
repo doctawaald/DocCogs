@@ -18,22 +18,29 @@ class MultiCounter(commands.Cog):
         try:
             count = await self.config.channel(channel).counter()
             message_id = await self.config.channel(channel).message_id()
-            
+            new_message = None
+
+            # Try to edit existing message
             if message_id:
                 try:
                     message = await channel.fetch_message(message_id)
                     await message.edit(content=f"**Current count:** {count}")
                     return message
-                except (discord.NotFound, discord.Forbidden):
-                    pass
-                    
-            # Create new message if none exists or existing message was deleted
-            message = await channel.send(f"**Current count:** {count}")
-            await self.config.channel(channel).message_id.set(message.id)
-            return message
-            
+                except discord.NotFound:
+                    print(f"Message {message_id} not found, creating new one")
+                    new_message = await channel.send(f"**Current count:** {count}")
+                except discord.Forbidden:
+                    print(f"Missing permissions to edit message in {channel.name}")
+                    return
+
+            # Create new message if needed
+            if not message_id or new_message:
+                new_message = new_message or await channel.send(f"**Current count:** {count}")
+                await self.config.channel(channel).message_id.set(new_message.id)
+                return new_message
+
         except Exception as e:
-            print(f"Error updating counter: {str(e)}")
+            print(f"Error updating counter message: {str(e)}")
 
     @commands.command()
     @commands.admin_or_permissions(administrator=True)
@@ -63,20 +70,22 @@ class MultiCounter(commands.Cog):
                 return
 
             # Increment counter
-            current = await self.config.channel(message.channel).counter()
-            new_count = current + 1
-            await self.config.channel(message.channel).counter.set(new_count)
-            
+            async with self.config.channel(message.channel).counter() as counter:
+                counter += 1
+                new_count = counter
+
             # Update persistent message
-            await self.update_counter_message(message.channel)
-            
-            # Send temporary confirmation
-            temp_msg = await message.channel.send(
-                f"✅ Count increased to {new_count}!",
-                delete_after=5
-            )
-            await message.delete()
-            
+            updated = await self.update_counter_message(message.channel)
+            if updated:
+                # Send temporary confirmation
+                temp_msg = await message.channel.send(
+                    f"✅ Count increased to {new_count}!",
+                    delete_after=5
+                )
+                await message.delete()
+            else:
+                await message.channel.send("❌ Failed to update counter message!", delete_after=5)
+
         except Exception as e:
             print(f"Error handling +1: {str(e)}")
 
