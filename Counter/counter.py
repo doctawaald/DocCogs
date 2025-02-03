@@ -114,5 +114,5 @@ class Counter(commands.Cog):
         confirm_msg = await channel.send(embed=embed)
         await confirm_msg.delete(delay=5)
 
-def setup(bot):
-    bot.add_cog(Counter(bot))
+async def setup(bot):
+    await bot.add_cog(Counter(bot))
