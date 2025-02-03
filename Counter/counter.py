@@ -1,69 +1,118 @@
-from redbot.core import commands, Config
 import discord
+from redbot.core import commands, Config
+from redbot.core.utils.checks import mod_or_permissions
 
-class CounterCog(commands.Cog):
-    """A cog that counts "+1" messages in specific channels."""
-
+class Counter(commands.Cog):
+    """Channel-specific counter cog"""
+    
     def __init__(self, bot):
         self.bot = bot
-        self.config = Config.get_conf(self, identifier=1234567890)
-        self.config.register_channel(counter=0, message_id=None)
+        self.config = Config.get_conf(self, identifier=12345, force_registration=True)
+        self.config.register_channel(
+            enabled=False,
+            count=0,
+            message_id=None
+        )
 
     @commands.command()
-    async def setup_counter(self, ctx: commands.Context):
-        """Set up the current channel for counting."""
-        await self.config.channel(ctx.channel).counter.set(0)
+    async def init(self, ctx):
+        """Initialize a counter in the current channel"""
+        if await self.config.channel(ctx.channel).enabled():
+            await ctx.send("✅ A counter is already active in this channel!")
+            return
+            
+        await self.config.channel(ctx.channel).enabled.set(True)
+        await self.config.channel(ctx.channel).count.set(0)
         await self.config.channel(ctx.channel).message_id.set(None)
-        await ctx.send(f"Counting setup complete for {ctx.channel.mention}.")
+        await ctx.send("🔢 Counter initialized in this channel!")
 
     @commands.command()
-    async def set_counter(self, ctx: commands.Context, count: int):
-        """Set the counter to a specific value in the current channel."""
-        await self.config.channel(ctx.channel).counter.set(count)
-        await self.update_count_message(ctx.channel)
-        await ctx.send(f"Counter set to {count} in {ctx.channel.mention}.")
+    async def view(self, ctx):
+        """View the current count"""
+        if not await self.config.channel(ctx.channel).enabled():
+            await ctx.send("❌ No counter is active in this channel!")
+            return
+            
+        count = await self.config.channel(ctx.channel).count()
+        await ctx.send(f"📊 Current count: **{count}**")
 
     @commands.command()
-    async def show_counter(self, ctx: commands.Context):
-        """Show the current counter value in this channel."""
-        count = await self.config.channel(ctx.channel).counter()
-        await ctx.send(f"Current count in {ctx.channel.mention}: {count}")
+    @mod_or_permissions(manage_messages=True)
+    async def edit(self, ctx, number: int):
+        """Edit the current count (Mod only)"""
+        if not await self.config.channel(ctx.channel).enabled():
+            await ctx.send("❌ No counter is active in this channel!")
+            return
+            
+        await self.config.channel(ctx.channel).count.set(number)
+        
+        # Update count message
+        channel = ctx.channel
+        msg_id = await self.config.channel(channel).message_id()
+        if msg_id:
+            try:
+                msg = await channel.fetch_message(msg_id)
+                await msg.edit(content=f"📊 Current count: **{number}**")
+            except:
+                pass
+                
+        await ctx.send(f"✅ Count updated to **{number}**!")
+
+    @commands.command()
+    @mod_or_permissions(manage_messages=True)
+    async def remove(self, ctx):
+        """Remove the counter (Mod only)"""
+        if not await self.config.channel(ctx.channel).enabled():
+            await ctx.send("❌ No counter is active in this channel!")
+            return
+            
+        await self.config.channel(ctx.channel).clear()
+        await ctx.send("🗑️ Counter removed from this channel!")
 
     @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        if message.author.bot:
+    async def on_message(self, message):
+        if message.author.bot or message.content.strip() != "+1":
+            return
+            
+        channel = message.channel
+        config = self.config.channel(channel)
+        
+        if not await config.enabled():
             return
 
-        # Check if the message is "+1"
-        if message.content.strip() == "+1":
+        # Check permissions
+        if not channel.permissions_for(channel.guild.me).manage_messages:
+            return
+
+        try:
             await message.delete()
+        except:
+            return
 
-            channel = message.channel
-            count = await self.config.channel(channel).counter()
-            count += 1
-            await self.config.channel(channel).counter.set(count)
+        # Update count
+        new_count = await config.count() + 1
+        await config.count.set(new_count)
 
-            await self.update_count_message(channel)
+        # Update count message
+        msg_id = await config.message_id()
+        try:
+            if msg_id:
+                msg = await channel.fetch_message(msg_id)
+                await msg.edit(content=f"📊 Current count: **{new_count}**")
+            else:
+                msg = await channel.send(f"📊 Current count: **{new_count}**")
+                await config.message_id.set(msg.id)
+        except:
+            msg = await channel.send(f"📊 Current count: **{new_count}**")
+            await config.message_id.set(msg.id)
 
-    async def update_count_message(self, channel: discord.TextChannel):
-        """Update or create the count message in the channel."""
-        count = await self.config.channel(channel).counter()
-        message_id = await self.config.channel(channel).message_id()
+        # Send confirmation embed
+        embed = discord.Embed(
+            description=f"✅ Count updated to **{new_count}**!",
+            color=discord.Color.green()
+        )
+        confirm_msg = await channel.send(embed=embed)
+        await confirm_msg.delete(delay=5)
 
-        # Try to fetch the previous message if it exists
-        message = None
-        if message_id:
-            try:
-                message = await channel.fetch_message(message_id)
-            except discord.NotFound:
-                pass
-
-        # Edit the existing message or send a new one
-        if message:
-            await message.edit(content=f"Current count: {count}")
-        else:
-            new_message = await channel.send(f"Current count: {count}")
-            await self.config.channel(channel).message_id.set(new_message.id)
-
-async def setup(bot):
-    bot.add_cog(CounterCog(bot))
+def setup(bot):
+    bot.add_cog(Counter(bot))
