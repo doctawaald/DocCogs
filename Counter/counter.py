@@ -69,8 +69,51 @@ class Counter(commands.Cog):
         await self.config.channel(ctx.channel).clear()
         await ctx.send("🗑️ Counter removed from this channel!")
 
-    # Rest of the code remains the same...
-    # [Keep the on_message listener and other functions unchanged]
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        """Handles +1 messages in enabled channels"""
+        if message.author.bot or message.content.strip() != "+1":
+            return
+            
+        channel = message.channel
+        config = self.config.channel(channel)
+        
+        if not await config.enabled():
+            return
+
+        # Check permissions
+        if not channel.permissions_for(channel.guild.me).manage_messages:
+            return
+
+        try:
+            await message.delete()
+        except:
+            return
+
+        # Update count
+        new_count = await config.count() + 1
+        await config.count.set(new_count)
+
+        # Update count message
+        msg_id = await config.message_id()
+        try:
+            if msg_id:
+                msg = await channel.fetch_message(msg_id)
+                await msg.edit(content=f"📊 Current count: **{new_count}**")
+            else:
+                msg = await channel.send(f"📊 Current count: **{new_count}**")
+                await config.message_id.set(msg.id)
+        except:
+            msg = await channel.send(f"📊 Current count: **{new_count}**")
+            await config.message_id.set(msg.id)
+
+        # Send confirmation embed
+        embed = discord.Embed(
+            description=f"✅ Count updated to **{new_count}**!",
+            color=discord.Color.green()
+        )
+        confirm_msg = await channel.send(embed=embed)
+        await confirm_msg.delete(delay=5)
 
 async def setup(bot):
     await bot.add_cog(Counter(bot))
