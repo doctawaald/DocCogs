@@ -14,59 +14,37 @@ class Counter(commands.Cog):
 
     @commands.command()
     @commands.admin_or_permissions(administrator=True)
-    async def checkchannel(self, ctx):
-        """Debug: Show configured channel ID"""
-        channel_id = await self.config.channel_id()
-        await ctx.send(f"Configured channel ID: {channel_id} (Current channel ID: {ctx.channel.id})")
-
-    @commands.command()
-    @commands.admin_or_permissions(administrator=True)
     async def setcountchannel(self, ctx, channel: discord.TextChannel):
         """Set the channel where +1 commands will be counted"""
         await self.config.channel_id.set(channel.id)
-        await ctx.send(f"+1 counting channel set to {channel.mention} (ID: {channel.id})")
+        await ctx.send(f"+1 counting channel set to {channel.mention}")
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        try:
-            # Debug: Print basic message info
-            print(f"Message received: {message.content} in {message.channel.id}")
+        # Ignore bot messages and messages without +1
+        if message.author.bot or message.content.strip() != "+1":
+            return
 
-            if message.author.bot:
-                print("Ignored: Bot message")
-                return
-
-            if message.content.strip() != "+1":
-                print(f"Ignored: Content '{message.content}' doesn't match +1")
-                return
-
-            channel_id = await self.config.channel_id()
-            print(f"Configured channel ID: {channel_id} | Current channel ID: {message.channel.id}")
-
-            if not channel_id:
-                print("Ignored: No channel configured")
-                return
-
-            if message.channel.id != channel_id:
-                print("Ignored: Wrong channel")
-                return
-
-            async with self.config.counter() as counter:
-                counter += 1
-                total = counter
-                print(f"Counter updated to: {total}")
-
-            await message.channel.send(f"Counter updated! Total +1's: **{total}**")
+        # Get configured channel ID
+        channel_id = await self.config.channel_id()
+        
+        # Check if message is in the correct channel
+        if channel_id and message.channel.id == channel_id:
+            # Get current counter value
+            current_count = await self.config.counter()
             
-        except Exception as e:
-            print(f"ERROR: {str(e)}")
+            # Increment counter
+            new_count = current_count + 1
+            await self.config.counter.set(new_count)
+            
+            # Send response
+            await message.channel.send(f"Counter updated! Total +1's: **{new_count}**")
 
     @commands.command()
     async def showcounter(self, ctx):
         """Show the current +1 count"""
         count = await self.config.counter()
-        channel_id = await self.config.channel_id()
-        await ctx.send(f"Total +1's counted: **{count}**\nConfigured channel ID: {channel_id}")
+        await ctx.send(f"Total +1's counted: **{count}**")
 
 async def setup(bot):
     await bot.add_cog(Counter(bot))
