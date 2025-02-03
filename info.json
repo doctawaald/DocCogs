@@ -3,6 +3,6 @@
     "install_msg" : "Private Repo.",
     "name" : "DocCogs",
     "short" : "Personal Redbot Cogs!",
-    "description" : "MPersonal Redbot Cogs!",
+    "description" : "Personal Redbot Cogs!",
     "tags" : ["utility", "functionalities"]
 }
