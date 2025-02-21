@@ -1,6 +1,6 @@
-from .wcwl import WCWL  # Matches uppercase class name
+from .mcwl import Mcwl
 
 async def setup(bot):
-    cog = WCWL(bot)  # Use uppercase class name
+    cog = Mcwl(bot)
     await cog.initialize()
     await bot.add_cog(cog)
