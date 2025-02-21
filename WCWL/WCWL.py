@@ -9,7 +9,7 @@ from redbot.core.i18n import Translator, cog_i18n
 from redbot.core.utils.chat_formatting import pagify
 from redbot.core.utils.menus import DEFAULT_CONTROLS, menu
 
-_ = Translator("Mcwl", __file__)
+_ = Translator("MCWL", __file__)
 
 
 @cog_i18n(_)
