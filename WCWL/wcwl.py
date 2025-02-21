@@ -1,5 +1,6 @@
 import json
 import discord
+from aiomcrcon import Client
 
 from aiomcrcon import Client
 from aiomcrcon.errors import IncorrectPasswordError, RCONConnectionError
@@ -13,7 +14,7 @@ _ = Translator("MCWL", __file__)
 
 
 @cog_i18n(_)
-class Mcwl(commands.Cog):
+class WCWL(commands.Cog):  # Uppercase class name
     __version__ = "1.0.0"
 
     def format_help_for_context(self, ctx: commands.Context) -> str:
@@ -82,11 +83,9 @@ class Mcwl(commands.Cog):
             )
             await self.config.notification.set(1)
 
-    # [Rest of the code remains the same except for the following changes:]
-
-    @commands.group(name="mcwl")
-    async def mcwl(self, ctx):
-        """Minecraft whitelist management commands"""
+    @commands.group(name="wcwl")  # Command group name
+    async def wcwl(self, ctx):
+        """WCWL management commands"""
         pass
 
     # Changed all @whitelister.command() decorators to @mcwl.command()
