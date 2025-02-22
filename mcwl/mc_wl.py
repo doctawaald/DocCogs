@@ -2,14 +2,12 @@ import discord
 from redbot.core import commands, Config
 import re
 import asyncio
-import rcon
 
 class MCWhitelist(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1234567890)
         
-        # Guild settings
         self.config.register_guild(
             log_channel=None,
             whitelist_role=None,
@@ -18,10 +16,46 @@ class MCWhitelist(commands.Cog):
             rcon_password=None
         )
         
-        # Member settings
         self.config.register_member(
             mc_name=None
         )
+
+    async def _rcon_command(self, host, port, password, command):
+        try:
+            reader, writer = await asyncio.open_connection(host, int(port))
+            
+            # Send login packet
+            login_packet = (
+                b"\x00\x00\x00\x00"  # Request ID (0 for login)
+                + b"\x03"            # Login type (3)
+                + password.encode("utf-8") + b"\x00"
+                + b"\x00\x00"        # Two null bytes for padding
+            )
+            writer.write(len(login_packet).to_bytes(4, "little") + login_packet)
+            await writer.drain()
+            
+            # Read login response
+            response_length = int.from_bytes(await reader.read(4), "little")
+            await reader.read(response_length)  # Discard login response
+            
+            # Send command packet
+            command_packet = (
+                b"\x01\x00\x00\x00"  # Request ID (1)
+                + b"\x02"            # Command type (2)
+                + command.encode("utf-8") + b"\x00"
+                + b"\x00"            # Null byte padding
+            )
+            writer.write(len(command_packet).to_bytes(4, "little") + command_packet)
+            await writer.drain()
+            
+            # Read command response
+            response_length = int.from_bytes(await reader.read(4), "little")
+            response = await reader.read(response_length)
+            writer.close()
+            
+            return response[4:-2].decode("utf-8")  # Strip packet headers and null bytes
+        except Exception as e:
+            raise e
 
     async def add_to_whitelist(self, guild, mc_name):
         try:
@@ -29,10 +63,7 @@ class MCWhitelist(commands.Cog):
             if not all([config["rcon_host"], config["rcon_port"], config["rcon_password"]]):
                 return False, "RCON not configured"
             
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None,
-                self._rcon_command,
+            result = await self._rcon_command(
                 config["rcon_host"],
                 config["rcon_port"],
                 config["rcon_password"],
@@ -48,10 +79,7 @@ class MCWhitelist(commands.Cog):
             if not all([config["rcon_host"], config["rcon_port"], config["rcon_password"]]):
                 return False, "RCON not configured"
             
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None,
-                self._rcon_command,
+            result = await self._rcon_command(
                 config["rcon_host"],
                 config["rcon_port"],
                 config["rcon_password"],
@@ -60,14 +88,6 @@ class MCWhitelist(commands.Cog):
             return True, result
         except Exception as e:
             return False, str(e)
-
-    def _rcon_command(self, host, port, password, command):
-        try:
-            client = rcon.Client(host, int(port), password=password)
-            response = client.send_command(command)
-            return response
-        except Exception as e:
-            raise e
 
     @commands.admin()
     @commands.command()
@@ -95,16 +115,14 @@ class MCWhitelist(commands.Cog):
     @commands.command()
     async def mcwlsetname(self, ctx, mc_name: str):
         """Set your Minecraft username"""
-        # Validate name
         if not 3 <= len(mc_name) <= 16:
             return await ctx.send("Name must be between 3-16 characters")
-        if not re.match(r"^\w+$", mc_name):
+        if not re.match(r"^[a-zA-Z0-9_]+$", mc_name):
             return await ctx.send("Name can only contain letters, numbers and underscores")
         
         guild = ctx.guild
         member = ctx.author
         
-        # Check existing name
         current_name = await self.config.member(member).mc_name()
         role_id = await self.config.guild(guild).whitelist_role()
         
@@ -117,7 +135,6 @@ class MCWhitelist(commands.Cog):
         await self.config.member(member).mc_name.set(mc_name)
         await ctx.send(f"MC name set to `{mc_name}`")
         
-        # Log name change
         log_channel_id = await self.config.guild(guild).log_channel()
         if log_channel_id:
             log_channel = guild.get_channel(log_channel_id)
@@ -145,7 +162,6 @@ class MCWhitelist(commands.Cog):
         await member.remove_roles(role)
         await ctx.send(f"Removed {member.mention} from whitelist")
         
-        # Log removal
         log_channel_id = await self.config.guild(guild).log_channel()
         if log_channel_id:
             log_channel = guild.get_channel(log_channel_id)
@@ -199,5 +215,5 @@ class MCWhitelist(commands.Cog):
                     else:
                         await log_channel.send(f"Failed to remove {mc_name}: {response}")
 
-def setup(bot):
-    bot.add_cog(MCWhitelist(bot))
+async def setup(bot):
+    await bot.add_cog(MCWhitelist(bot))
