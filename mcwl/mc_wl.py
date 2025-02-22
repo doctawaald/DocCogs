@@ -14,7 +14,8 @@ class MCWhitelist(commands.Cog):
             whitelist_role=None,
             rcon_host=None,
             rcon_port=None,
-            rcon_password=None
+            rcon_password=None,
+            welcome_message="You've been added to the Minecraft server whitelist! Your username `{mc_name}` is now whitelisted."
         )
         
         self.config.register_member(
@@ -203,6 +204,13 @@ class MCWhitelist(commands.Cog):
             if log_channel_id:
                 log_channel = guild.get_channel(log_channel_id)
                 if success:
+                    # Send DM notification
+                    welcome_msg = await self.config.guild(guild).welcome_message()
+                    try:
+                        await after.send(welcome_msg.format(mc_name=mc_name))
+                    except discord.Forbidden:
+                        await log_channel.send(f"Could not DM {after.mention} about whitelist addition (DMs disabled)")
+                    
                     await log_channel.send(f"Added `{mc_name}` to whitelist for {after.mention}")
                 else:
                     await log_channel.send(f"Failed to add {mc_name}: {response}")
