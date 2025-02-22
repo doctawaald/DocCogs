@@ -2,6 +2,7 @@ import discord
 from redbot.core import commands, Config
 import re
 import asyncio
+import struct
 
 class MCWhitelist(commands.Cog):
     def __init__(self, bot):
@@ -24,36 +25,33 @@ class MCWhitelist(commands.Cog):
         try:
             reader, writer = await asyncio.open_connection(host, int(port))
             
-            # Send login packet
-            login_packet = (
-                b"\x00\x00\x00\x00"  # Request ID (0 for login)
-                + b"\x03"            # Login type (3)
-                + password.encode("utf-8") + b"\x00"
-                + b"\x00\x00"        # Two null bytes for padding
-            )
-            writer.write(len(login_packet).to_bytes(4, "little") + login_packet)
+            login_packet = b"\x00\x00\x00\x00"  # Request ID
+            login_packet += struct.pack("<i", 3)  # Login type
+            login_packet += password.encode("utf-8") + b"\x00"
+            login_packet += b"\x00\x00"  # Padding
+            
+            writer.write(struct.pack("<i", len(login_packet)) + login_packet)
             await writer.drain()
             
-            # Read login response
-            response_length = int.from_bytes(await reader.read(4), "little")
-            await reader.read(response_length)  # Discard login response
+            login_response_length = struct.unpack("<i", await reader.read(4))[0]
+            await reader.read(login_response_length)
             
-            # Send command packet
-            command_packet = (
-                b"\x01\x00\x00\x00"  # Request ID (1)
-                + b"\x02"            # Command type (2)
-                + command.encode("utf-8") + b"\x00"
-                + b"\x00"            # Null byte padding
-            )
-            writer.write(len(command_packet).to_bytes(4, "little") + command_packet)
+            command_packet = b"\x01\x00\x00\x00"  # Request ID
+            command_packet += struct.pack("<i", 2)  # Command type
+            command_packet += command.encode("utf-8") + b"\x00"
+            command_packet += b"\x00\x00"  # Padding
+            
+            writer.write(struct.pack("<i", len(command_packet)) + command_packet)
             await writer.drain()
             
-            # Read command response
-            response_length = int.from_bytes(await reader.read(4), "little")
+            response_length = struct.unpack("<i", await reader.read(4))[0]
             response = await reader.read(response_length)
-            writer.close()
             
-            return response[4:-2].decode("utf-8")  # Strip packet headers and null bytes
+            writer.close()
+            await writer.wait_closed()
+
+            return response[8:-2].decode("utf-8").strip()
+            
         except Exception as e:
             raise e
 
@@ -69,7 +67,9 @@ class MCWhitelist(commands.Cog):
                 config["rcon_password"],
                 f"whitelist add {mc_name}"
             )
-            return True, result
+            if "Added" in result:
+                return True, result
+            return False, result
         except Exception as e:
             return False, str(e)
 
@@ -85,7 +85,9 @@ class MCWhitelist(commands.Cog):
                 config["rcon_password"],
                 f"whitelist remove {mc_name}"
             )
-            return True, result
+            if "Removed" in result:
+                return True, result
+            return False, result
         except Exception as e:
             return False, str(e)
 
@@ -123,7 +125,7 @@ class MCWhitelist(commands.Cog):
         guild = ctx.guild
         member = ctx.author
         
-        current_name = await self.config.member(member).mc_name()
+        old_name = await self.config.member(member).mc_name()
         role_id = await self.config.guild(guild).whitelist_role()
         
         if role_id:
@@ -139,7 +141,11 @@ class MCWhitelist(commands.Cog):
         if log_channel_id:
             log_channel = guild.get_channel(log_channel_id)
             if log_channel:
-                await log_channel.send(f"{member.mention} changed their MC name to `{mc_name}`")
+                if old_name:
+                    msg = f"{member.mention} changed their MC name to `{mc_name}` (was `{old_name}`)"
+                else:
+                    msg = f"{member.mention} set their MC name to `{mc_name}`"
+                await log_channel.send(msg)
 
     @commands.admin()
     @commands.command()
