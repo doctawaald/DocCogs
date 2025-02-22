@@ -1,0 +1,19 @@
+{
+    "author": [
+        "dOCTAWAALd"
+    ],
+    "description": "Automaticly give users acces to your server if they have the MC-Game role.",
+    "hidden": false,
+    "install_msg": "Thank you for installing mc-wl.",
+    "short": "Sync Minecraft whitelist automaticly with discord.",
+    "tags": [
+        "Minecraft",
+        "Whitelist",
+        "Automation"
+    ],
+    "requirements": [
+        "rcon"
+    ],
+    "end_user_data_statement": "This cog stores end user data in order to allow it to whitelist players on a minecraft server. It stores minecraft player names(and user IDs) as well as discord user IDs.",
+    "min_bot_version": "3.5.0"
+}
