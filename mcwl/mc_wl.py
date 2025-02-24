@@ -27,29 +27,25 @@ class MCWhitelist(commands.Cog):
         try:
             reader, writer = await asyncio.open_connection(host, int(port))
             
-            # Login packet
-            login_packet = b"\x00\x00\x00\x00"  # Request ID
-            login_packet += struct.pack("<i", 3)  # Login type
+            login_packet = b"\x00\x00\x00\x00"
+            login_packet += struct.pack("<i", 3)
             login_packet += password.encode("utf-8") + b"\x00"
-            login_packet += b"\x00\x00"  # Padding
+            login_packet += b"\x00\x00"
             
             writer.write(struct.pack("<i", len(login_packet)) + login_packet)
             await writer.drain()
             
-            # Login response
             login_response_length = struct.unpack("<i", await reader.read(4))[0]
             await reader.read(login_response_length)
             
-            # Command packet
-            command_packet = b"\x01\x00\x00\x00"  # Request ID
-            command_packet += struct.pack("<i", 2)  # Command type
+            command_packet = b"\x01\x00\x00\x00"
+            command_packet += struct.pack("<i", 2)
             command_packet += command.encode("utf-8") + b"\x00"
-            command_packet += b"\x00\x00"  # Padding
+            command_packet += b"\x00\x00"
             
             writer.write(struct.pack("<i", len(command_packet)) + command_packet)
             await writer.drain()
             
-            # Command response
             response_length = struct.unpack("<i", await reader.read(4))[0]
             response = await reader.read(response_length)
             
@@ -199,9 +195,8 @@ class MCWhitelist(commands.Cog):
         if not members:
             return await ctx.send("❌ No members with this role!")
 
-        # Generate options asynchronously
         options = []
-        for member in members[:25]:  # Discord's select menu limit
+        for member in members[:25]:
             mc_name = await self.config.member(member).mc_name()
             label = f"{member.display_name}"[:25]
             desc = f"MC: {mc_name}"[:40] if mc_name else "No MC name"
@@ -213,30 +208,32 @@ class MCWhitelist(commands.Cog):
             ))
 
         class MemberSelect(Select):
-            def __init__(self, options):
+            def __init__(self, cog, guild, whitelist_role, options):
                 super().__init__(
                     placeholder="Select members to whitelist...",
                     min_values=1,
                     max_values=len(options),
                     options=options
                 )
+                self.cog = cog
+                self.guild = guild
+                self.whitelist_role = whitelist_role
 
             async def callback(self, interaction: discord.Interaction):
                 selected_ids = [int(i) for i in self.values]
-                selected_members = [guild.get_member(i) for i in selected_ids]
+                selected_members = [self.guild.get_member(i) for i in selected_ids]
                 
                 added = []
                 failed = []
-                welcome_msg = await self.cog.config.guild(guild).welcome_message()
+                welcome_msg = await self.cog.config.guild(self.guild).welcome_message()
                 
                 for member in selected_members:
                     if not member:
                         continue
                     try:
                         mc_name = await self.cog.config.member(member).mc_name()
-                        await member.add_roles(whitelist_role)
+                        await member.add_roles(self.whitelist_role)
                         
-                        # Send DM
                         try:
                             if mc_name:
                                 await member.send(welcome_msg.format(mc_name=mc_name))
@@ -253,10 +250,16 @@ class MCWhitelist(commands.Cog):
                 if failed:
                     embed.add_field(name="❌ Failed", value="\n".join(failed), inline=False)
                 
+                # Update original message
                 await interaction.response.edit_message(embed=embed, view=None)
+                
+                # Update whitelist in Minecraft
+                for member in selected_members:
+                    if mc_name := await self.cog.config.member(member).mc_name():
+                        await self.cog.add_to_whitelist(self.guild, mc_name)
 
         view = View()
-        view.add_item(MemberSelect(options))
+        view.add_item(MemberSelect(self, guild, whitelist_role, options))
         
         embed = discord.Embed(
             title=f"Whitelist Members from {game_role.name}",
@@ -276,7 +279,6 @@ class MCWhitelist(commands.Cog):
         if not role:
             return
         
-        # Role added
         if role not in before.roles and role in after.roles:
             mc_name = await self.config.member(after).mc_name()
             log_channel_id = await self.config.guild(guild).log_channel()
@@ -295,7 +297,6 @@ class MCWhitelist(commands.Cog):
                 else:
                     await log_channel.send(f"❌ Failed to add {mc_name}: {response}")
         
-        # Role removed
         elif role in before.roles and role not in after.roles:
             mc_name = await self.config.member(after).mc_name()
             log_channel_id = await self.config.guild(guild).log_channel()
