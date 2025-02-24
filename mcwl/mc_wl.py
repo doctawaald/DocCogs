@@ -1,9 +1,10 @@
 import discord
 from redbot.core import commands, Config
-from discord.ui import Select, View
+from discord.ui import Select, View, Button
 import re
 import asyncio
 import struct
+from typing import Optional
 
 class MCWhitelist(commands.Cog):
     def __init__(self, bot):
@@ -13,10 +14,12 @@ class MCWhitelist(commands.Cog):
         self.config.register_guild(
             log_channel=None,
             whitelist_role=None,
+            game_role=None,  # New config entry for game role
             rcon_host=None,
             rcon_port=None,
             rcon_password=None,
-            welcome_message="✅ You've been added to the Minecraft whitelist!\nYour username `{mc_name}` is now whitelisted."
+            welcome_message="✅ You've been added to the Minecraft whitelist!\nYour username `{mc_name}` is now whitelisted.",
+            status_message=None  # To track the status embed
         )
         
         self.config.register_member(
@@ -180,21 +183,108 @@ class MCWhitelist(commands.Cog):
     @commands.admin()
     @commands.command()
     async def mcwladd(self, ctx, game_role: discord.Role):
-        """Select members with game role to whitelist"""
+        """Set the game role to manage"""
+        await self.config.guild(ctx.guild).game_role.set(game_role.id)
+        await ctx.send(f"🎮 Game role set to {game_role.name}")
+
+    @commands.admin()
+    @commands.command()
+    async def mcwlmember(self, ctx):
+        """Show whitelist status for game role members"""
         guild = ctx.guild
+        game_role_id = await self.config.guild(guild).game_role()
         whitelist_role_id = await self.config.guild(guild).whitelist_role()
         
+        if not game_role_id:
+            return await ctx.send("❌ Game role not set! Use `mcwladd` first.")
         if not whitelist_role_id:
-            return await ctx.send("❌ Whitelist role not configured!")
+            return await ctx.send("❌ Whitelist role not set! Use `mcwlsetrole` first.")
         
+        game_role = guild.get_role(game_role_id)
         whitelist_role = guild.get_role(whitelist_role_id)
-        if not whitelist_role:
-            return await ctx.send("❌ Whitelist role not found!")
+        
+        if not game_role or not whitelist_role:
+            return await ctx.send("❌ Roles not found! Check configuration.")
         
         members = [m for m in game_role.members if not m.bot]
         if not members:
-            return await ctx.send("❌ No members with this role!")
+            return await ctx.send("❌ No members in the game role!")
+        
+        class StatusView(View):
+            def __init__(self, cog):
+                super().__init__(timeout=None)
+                self.cog = cog
+            
+            @discord.ui.button(label="Refresh", style=discord.ButtonStyle.grey, custom_id="refresh_status")
+            async def refresh_button(self, interaction: discord.Interaction, button: Button):
+                await self.update_embed(interaction)
+            
+            async def update_embed(self, interaction: Optional[discord.Interaction] = None):
+                guild = interaction.guild if interaction else ctx.guild
+                game_role = guild.get_role(game_role_id)
+                whitelist_role = guild.get_role(whitelist_role_id)
+                
+                members = sorted(game_role.members, key=lambda m: m.display_name)
+                
+                embed = discord.Embed(
+                    title=f"Whitelist Status - {game_role.name}",
+                    description="🟢 = Whitelisted | 🔴 = Not whitelisted\n\n",
+                    color=game_role.color
+                )
+                
+                for member in members[:25]:  # Discord embed limits
+                    mc_name = await self.cog.config.member(member).mc_name()
+                    status = "🟢" if whitelist_role in member.roles else "🔴"
+                    mc_text = f"MC: `{mc_name}`" if mc_name else "*No MC name*"
+                    embed.description += (
+                        f"{status} {member.mention} - {mc_text}\n"
+                    )
+                
+                if len(members) > 25:
+                    embed.set_footer(text=f"Showing 25 of {len(members)} members")
+                
+                if interaction:
+                    await interaction.response.edit_message(embed=embed)
+                else:
+                    return embed
+        
+        # Create initial embed
+        view = StatusView(self)
+        embed = await view.update_embed()
+        
+        # Check if we should edit existing message
+        status_message_id = await self.config.guild(guild).status_message()
+        if status_message_id:
+            try:
+                message = await ctx.channel.fetch_message(status_message_id)
+                await message.edit(embed=embed, view=view)
+                return
+            except:
+                pass
+        
+        # Send new message and store ID
+        message = await ctx.send(embed=embed, view=view)
+        await self.config.guild(guild).status_message.set(message.id)
 
+    @commands.admin()
+    @commands.command()
+    async def mcwlprocess(self, ctx):
+        """Process game role members for whitelisting"""
+        guild = ctx.guild
+        game_role_id = await self.config.guild(guild).game_role()
+        whitelist_role_id = await self.config.guild(guild).whitelist_role()
+        
+        if not game_role_id or not whitelist_role_id:
+            return await ctx.send("❌ Configure roles first with `mcwladd` and `mcwlsetrole`")
+        
+        game_role = guild.get_role(game_role_id)
+        whitelist_role = guild.get_role(whitelist_role_id)
+        
+        members = [m for m in game_role.members if not m.bot]
+        if not members:
+            return await ctx.send("❌ No members in the game role!")
+
+        # Generate options asynchronously
         options = []
         for member in members[:25]:
             mc_name = await self.config.member(member).mc_name()
@@ -207,32 +297,38 @@ class MCWhitelist(commands.Cog):
                 emoji="🟢" if mc_name else "🔴"
             ))
 
-        class MemberSelect(Select):
+        class ProcessView(View):
             def __init__(self, cog, guild, whitelist_role, options):
+                super().__init__()
+                self.cog = cog
+                self.guild = guild
+                self.whitelist_role = whitelist_role
+                self.add_item(SelectMenu(options))
+        
+        class SelectMenu(Select):
+            def __init__(self, options):
                 super().__init__(
                     placeholder="Select members to whitelist...",
                     min_values=1,
                     max_values=len(options),
                     options=options
                 )
-                self.cog = cog
-                self.guild = guild
-                self.whitelist_role = whitelist_role
-
+            
             async def callback(self, interaction: discord.Interaction):
+                view = self.view
                 selected_ids = [int(i) for i in self.values]
-                selected_members = [self.guild.get_member(i) for i in selected_ids]
+                selected_members = [view.guild.get_member(i) for i in selected_ids]
                 
                 added = []
                 failed = []
-                welcome_msg = await self.cog.config.guild(self.guild).welcome_message()
+                welcome_msg = await view.cog.config.guild(view.guild).welcome_message()
                 
                 for member in selected_members:
                     if not member:
                         continue
                     try:
-                        mc_name = await self.cog.config.member(member).mc_name()
-                        await member.add_roles(self.whitelist_role)
+                        mc_name = await view.cog.config.member(member).mc_name()
+                        await member.add_roles(view.whitelist_role)
                         
                         try:
                             if mc_name:
@@ -244,71 +340,34 @@ class MCWhitelist(commands.Cog):
                     except Exception as e:
                         failed.append(f"{member.mention} ({str(e)})")
                 
-                embed = discord.Embed(title="Whitelist Update", color=0x00ff00)
-                if added:
-                    embed.add_field(name="✅ Added", value="\n".join(added), inline=False)
-                if failed:
-                    embed.add_field(name="❌ Failed", value="\n".join(failed), inline=False)
+                # Update status embed
+                status_view = StatusView(view.cog)
+                status_embed = await status_view.update_embed()
                 
-                # Update original message
-                await interaction.response.edit_message(embed=embed, view=None)
+                # Edit original process message
+                await interaction.response.edit_message(
+                    content="✅ Processing complete!",
+                    embed=status_embed,
+                    view=StatusView(view.cog)
+                )
                 
-                # Update whitelist in Minecraft
-                for member in selected_members:
-                    if mc_name := await self.cog.config.member(member).mc_name():
-                        await self.cog.add_to_whitelist(self.guild, mc_name)
+                # Edit the persistent status message
+                try:
+                    status_message_id = await view.cog.config.guild(view.guild).status_message()
+                    if status_message_id:
+                        channel = interaction.channel
+                        message = await channel.fetch_message(status_message_id)
+                        await message.edit(embed=status_embed, view=status_view)
+                except:
+                    pass
 
-        view = View()
-        view.add_item(MemberSelect(self, guild, whitelist_role, options))
-        
+        view = ProcessView(self, guild, whitelist_role, options)
         embed = discord.Embed(
-            title=f"Whitelist Members from {game_role.name}",
+            title="Process Members for Whitelisting",
             description="Select members to add to the whitelist\n🟢 = MC name set\n🔴 = MC name missing",
-            color=game_role.color
+            color=whitelist_role.color
         )
         await ctx.send(embed=embed, view=view)
-
-    @commands.Cog.listener()
-    async def on_member_update(self, before, after):
-        guild = after.guild
-        role_id = await self.config.guild(guild).whitelist_role()
-        if not role_id:
-            return
-        
-        role = guild.get_role(role_id)
-        if not role:
-            return
-        
-        if role not in before.roles and role in after.roles:
-            mc_name = await self.config.member(after).mc_name()
-            log_channel_id = await self.config.guild(guild).log_channel()
-            
-            if not mc_name:
-                if log_channel_id:
-                    log_channel = guild.get_channel(log_channel_id)
-                    await log_channel.send(f"⚠️ {after.mention} got whitelist role but no MC name set")
-                return
-            
-            success, response = await self.add_to_whitelist(guild, mc_name)
-            if log_channel_id:
-                log_channel = guild.get_channel(log_channel_id)
-                if success:
-                    await log_channel.send(f"✅ Added `{mc_name}` for {after.mention}")
-                else:
-                    await log_channel.send(f"❌ Failed to add {mc_name}: {response}")
-        
-        elif role in before.roles and role not in after.roles:
-            mc_name = await self.config.member(after).mc_name()
-            log_channel_id = await self.config.guild(guild).log_channel()
-            
-            if mc_name:
-                success, response = await self.remove_from_whitelist(guild, mc_name)
-                if log_channel_id:
-                    log_channel = guild.get_channel(log_channel_id)
-                    if success:
-                        await log_channel.send(f"🚫 Removed `{mc_name}` from {after.mention}")
-                    else:
-                        await log_channel.send(f"⚠️ Failed to remove {mc_name}: {response}")
 
 async def setup(bot):
     await bot.add_cog(MCWhitelist(bot))
