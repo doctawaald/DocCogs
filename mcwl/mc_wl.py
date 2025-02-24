@@ -181,47 +181,47 @@ class MCWhitelist(commands.Cog):
                     msg += f" (MC: `{mc_name}`)"
                 await log_channel.send(msg)
 
-@commands.admin()
-@commands.command()
-async def mcwladd(self, ctx, game_role: discord.Role):
-    """Select members with game role to whitelist"""
-    guild = ctx.guild
-    whitelist_role_id = await self.config.guild(guild).whitelist_role()
-    
-    if not whitelist_role_id:
-        return await ctx.send("❌ Whitelist role not configured!")
-    
-    whitelist_role = guild.get_role(whitelist_role_id)
-    if not whitelist_role:
-        return await ctx.send("❌ Whitelist role not found!")
-    
-    members = [m for m in game_role.members if not m.bot]
-    if not members:
-        return await ctx.send("❌ No members with this role!")
+    @commands.admin()
+    @commands.command()
+    async def mcwladd(self, ctx, game_role: discord.Role):
+        """Select members with game role to whitelist"""
+        guild = ctx.guild
+        whitelist_role_id = await self.config.guild(guild).whitelist_role()
+        
+        if not whitelist_role_id:
+            return await ctx.send("❌ Whitelist role not configured!")
+        
+        whitelist_role = guild.get_role(whitelist_role_id)
+        if not whitelist_role:
+            return await ctx.send("❌ Whitelist role not found!")
+        
+        members = [m for m in game_role.members if not m.bot]
+        if not members:
+            return await ctx.send("❌ No members with this role!")
 
-    # Generate options asynchronously first
-    options = []
-    for member in members[:25]:  # Discord's select menu limit
-        mc_name = await self.config.member(member).mc_name()
-        label = f"{member.display_name}"[:25]
-        desc = f"MC: {mc_name}"[:40] if mc_name else "No MC name"
-        options.append(discord.SelectOption(
-            label=label,
-            value=str(member.id),
-            description=desc,
-            emoji="🟢" if mc_name else "🔴"
-        ))
+        # Generate options asynchronously
+        options = []
+        for member in members[:25]:  # Discord's select menu limit
+            mc_name = await self.config.member(member).mc_name()
+            label = f"{member.display_name}"[:25]
+            desc = f"MC: {mc_name}"[:40] if mc_name else "No MC name"
+            options.append(discord.SelectOption(
+                label=label,
+                value=str(member.id),
+                description=desc,
+                emoji="🟢" if mc_name else "🔴"
+            ))
 
-    class MemberSelect(Select):
-        def __init__(self, options):
-            super().__init__(
-                placeholder="Select members to whitelist...",
-                min_values=1,
-                max_values=len(options),
-                options=options
-            )
+        class MemberSelect(Select):
+            def __init__(self, options):
+                super().__init__(
+                    placeholder="Select members to whitelist...",
+                    min_values=1,
+                    max_values=len(options),
+                    options=options
+                )
 
-        async def callback(self, interaction):
+            async def callback(self, interaction: discord.Interaction):
                 selected_ids = [int(i) for i in self.values]
                 selected_members = [guild.get_member(i) for i in selected_ids]
                 
@@ -255,15 +255,15 @@ async def mcwladd(self, ctx, game_role: discord.Role):
                 
                 await interaction.response.edit_message(embed=embed, view=None)
 
-    view = View()
-    view.add_item(MemberSelect(options))
-    
-    embed = discord.Embed(
-        title=f"Whitelist Members from {game_role.name}",
-        description="Select members to add to the whitelist\n🟢 = MC name set\n🔴 = MC name missing",
-        color=game_role.color
-    )
-    await ctx.send(embed=embed, view=view)
+        view = View()
+        view.add_item(MemberSelect(options))
+        
+        embed = discord.Embed(
+            title=f"Whitelist Members from {game_role.name}",
+            description="Select members to add to the whitelist\n🟢 = MC name set\n🔴 = MC name missing",
+            color=game_role.color
+        )
+        await ctx.send(embed=embed, view=view)
 
     @commands.Cog.listener()
     async def on_member_update(self, before, after):
