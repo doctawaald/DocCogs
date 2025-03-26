@@ -1,6 +1,6 @@
 import discord
-from discord.ext import commands, tasks
 import datetime
+from redbot.core import commands, tasks  # Gebruik redbot.core in plaats van discord.ext
 
 class PaymentReminder(commands.Cog):
     """Plugin to send a monthly payment reminder with a configurable date at 21:00."""
@@ -23,7 +23,7 @@ class PaymentReminder(commands.Cog):
         This task runs daily at 21:00 UTC.
         If the current day matches the configured reminder day, send the reminders.
         """
-        now = datetime.datetime.utcnow()  # Adjust if you want a different timezone
+        now = datetime.datetime.utcnow()  # Adjust if you want to use a different timezone
         if now.day == self.reminder_day:
             for user_id in self.reminder_users:
                 user = self.bot.get_user(user_id)
