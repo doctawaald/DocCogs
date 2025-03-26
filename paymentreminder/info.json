@@ -7,7 +7,7 @@
     "install_msg": "Thank you for installing paymentreminder.",
     "short": "Send your members a monthly reminder to pay their 'bills'.",
     "tags": [
-        "Payment",
+        "Payment"
     ],
-    "end_user_data_statement": "This cog stores end user data in order to asend them a monthly reminder. It stores discord user IDs.",
+    "end_user_data_statement": "This cog stores end user data in order to send them a monthly reminder. It stores discord user IDs."
 }
