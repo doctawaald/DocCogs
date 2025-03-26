@@ -3,7 +3,7 @@ from discord.ext import commands, tasks
 import datetime
 
 class PaymentReminder(commands.Cog):
-    """Plugin to send a monthly payment reminder with a configurable date."""
+    """Plugin to send a monthly payment reminder with a configurable date at 21:00."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -11,17 +11,19 @@ class PaymentReminder(commands.Cog):
         self.reminder_users = []
         # Default day is the 1st of the month
         self.reminder_day = 1
-        # Start the background task
+        # Start the background task, scheduled to run daily at 21:00 (UTC)
         self.reminder_loop.start()
 
     def cog_unload(self):
-        # Stop the background task when the cog is unloaded
         self.reminder_loop.cancel()
 
-    @tasks.loop(hours=24)
+    @tasks.loop(time=datetime.time(hour=21, minute=0, second=0))
     async def reminder_loop(self):
-        """Check daily if it is the configured day and send reminders."""
-        now = datetime.datetime.utcnow()  # Adjust to local time if needed
+        """
+        This task runs daily at 21:00 UTC.
+        If the current day matches the configured reminder day, send the reminders.
+        """
+        now = datetime.datetime.utcnow()  # Adjust if you want a different timezone
         if now.day == self.reminder_day:
             for user_id in self.reminder_users:
                 user = self.bot.get_user(user_id)
@@ -62,5 +64,5 @@ class PaymentReminder(commands.Cog):
         self.reminder_day = day
         await ctx.send(f"The reminder day is now set to day {day} of the month.")
 
-def setup(bot):
-    bot.add_cog(PaymentReminder(bot))
+async def setup(bot):
+    await bot.add_cog(PaymentReminder(bot))
