@@ -1,13 +1,12 @@
 {
-    "author": [
-        "dOCTAWAALd"
-    ],
-    "description": "Send your members a monthly reminder to pay their 'bills'.",
-    "hidden": false,
-    "install_msg": "Thank you for installing paymentreminder.",
-    "short": "Send your members a monthly reminder to pay their 'bills'.",
+    "author": ["dOCTAWAALd"],
+    "name": "PaymentReminder",
+    "install_msg": "Thank you for installing PaymentReminder!",
+    "short": "Reminds your members to pay their share",
+    "description": "Reminds your members to pay their share",
     "tags": [
-        "Payment"
+        "bots",
+        "management"
     ],
-    "end_user_data_statement": "This cog stores end user data in order to send them a monthly reminder. It stores discord user IDs."
+    "end_user_data_statement": "This cog does not persistently store data or metadata about users."
 }
