@@ -24,7 +24,7 @@ class PaymentReminder(commands.Cog):
         # Default reminder time is set to 21:00
         self.reminder_hour = 21
         self.reminder_minute = 0
-        # Record the timestamp when the last reminder was sent per user (stored as datetime objects)
+        # Record the timestamp when the last reminder was sent per user (as datetime objects)
         self.last_reminder = {}
         # Set of user IDs who haven't confirmed payment yet
         self.unpaid = set()
@@ -169,6 +169,30 @@ class PaymentReminder(commands.Cog):
                         print(f"Could not notify admin about payment confirmation from {user_id}: {e}")
         else:
             await ctx.send("You have already confirmed your payment or are not on the reminder list.")
+
+    @commands.command()
+    @commands.has_permissions(administrator=True)
+    async def resetipaid(self, ctx, user: discord.User = None):
+        """
+        Reset the payment confirmation for a user, re-adding them to the unpaid list.
+        If no user is provided, resets for the invoker.
+        This command is intended for testing purposes.
+        """
+        if user is None:
+            user = ctx.author
+        if user.id not in self.reminder_users:
+            await ctx.send("That user is not on the reminder list.")
+            return
+        self.unpaid.add(user.id)
+        self.last_reminder[user.id] = datetime.datetime.now(BRUSSELS_TZ)
+        await ctx.send(f"{user.mention}'s payment status has been reset. They will receive reminders again.")
+        if self.notify_user:
+            admin_user = self.bot.get_user(self.notify_user)
+            if admin_user:
+                try:
+                    await admin_user.send(f"Payment status reset for {user} (ID: {user.id}).")
+                except Exception as e:
+                    print(f"Could not notify admin about reset for {user.id}: {e}")
 
 async def setup(bot):
     await bot.add_cog(PaymentReminder(bot))
