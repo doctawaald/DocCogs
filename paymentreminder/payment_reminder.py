@@ -101,7 +101,7 @@ class PaymentReminder(commands.Cog):
                     user = self.bot.get_user(user_id)
                     if user:
                         try:
-                            await user.send("Reminder: Please complete your payment for this month!")
+                            await user.send("Reminder: Please complete your payment for this month! (use !ipaid after your payment)")
                         except Exception as e:
                             print(f"Could not send monthly reminder to {user_id}: {e}")
                     # Update de timestamp en markeer als unpaid
@@ -126,7 +126,7 @@ class PaymentReminder(commands.Cog):
                     user = self.bot.get_user(user_id)
                     if user:
                         try:
-                            await user.send("Additional Reminder: Please complete your payment if you haven't done so already.")
+                            await user.send("Additional Reminder: Please complete your payment if you haven't done so already. (use !ipaid after your payment)")
                         except Exception as e:
                             print(f"Could not send additional reminder to {user_id}: {e}")
                     self.last_reminder[user_id] = now
