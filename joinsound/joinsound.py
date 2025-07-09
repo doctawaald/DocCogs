@@ -3,6 +3,7 @@ import discord
 import os
 import asyncio
 import traceback
+from types import SimpleNamespace
 
 class JoinSound(commands.Cog):
     """Plays a sound when a user joins a voice channel."""
@@ -76,12 +77,19 @@ class JoinSound(commands.Cog):
             return
 
         try:
-            print(f"🎧 Asking Audio cog to play for {member.display_name} in {after.channel}")
-            if os.path.isfile(source):
-                await audio_cog.play_path(after.guild, source)
-            else:
-                await audio_cog.play_url(after.guild, source)
+            # Fake context to trigger play command
+            fake_ctx = SimpleNamespace()
+            fake_ctx.guild = after.channel.guild
+            fake_ctx.author = member
+            fake_ctx.voice_client = None
+            fake_ctx.channel = after.channel
+            fake_ctx.clean_content = source
+            fake_ctx.send = lambda *args, **kwargs: None
+
+            print(f"🎧 Asking Audio cog to queue sound for {member.display_name} in {after.channel}")
+
+            await audio_cog.cmd_play(fake_ctx, source)
 
         except Exception as e:
-            print(f"⚠️ Error using Audio cog for playback: {e}")
+            print(f"⚠️ Error using Audio cog fallback: {e}")
             traceback.print_exc()
