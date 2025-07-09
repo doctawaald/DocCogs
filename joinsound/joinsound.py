@@ -77,8 +77,6 @@ class JoinSound(commands.Cog):
 
         try:
             print(f"🎧 Asking Audio cog to play for {member.display_name} in {after.channel}")
-            await audio_cog.connect_channel(after.channel)
-
             if os.path.isfile(source):
                 await audio_cog.play_path(after.guild, source)
             else:
