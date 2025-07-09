@@ -3,31 +3,30 @@ import discord
 import os
 import asyncio
 import traceback
-from types import SimpleNamespace
 
 class JoinSound(commands.Cog):
-    """Plays a sound when a user joins a voice channel."""
+    """Plays a sound when a user joins a voice channel using discord.py voice client."""
 
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=43219876)
         default_user = {"mp3_url": None}
         self.config.register_user(**default_user)
-        print("✅ JoinSound cog initialized.")
+        print("✅ JoinSound cog initialized. Ensure PyNaCl is installed for voice support.")
 
     @commands.command()
     @commands.has_permissions(administrator=True)
     async def joinsound(self, ctx, url: str = None):
         """
         Set a join sound (admin only):
-        - Upload an mp3 file as an attachment without an argument.
-        - Or provide an mp3 URL as an argument.
+        - Upload an mp3 as attachment if no URL provided.
+        - Or provide a direct .mp3 URL.
         """
         folder = "data/joinsound/mp3s/"
         os.makedirs(folder, exist_ok=True)
 
         if url:
-            if not url.endswith(".mp3"):
+            if not url.lower().endswith(".mp3"):
                 await ctx.send("❌ The link must end with `.mp3`.")
                 return
             await self.config.user(ctx.author).mp3_url.set(url)
@@ -39,7 +38,7 @@ class JoinSound(commands.Cog):
             return
 
         att = ctx.message.attachments[0]
-        if not att.filename.endswith(".mp3"):
+        if not att.filename.lower().endswith(".mp3"):
             await ctx.send("❌ Only `.mp3` files are allowed.")
             return
 
@@ -71,25 +70,14 @@ class JoinSound(commands.Cog):
 
         source = local_path if os.path.isfile(local_path) else url
 
-        audio_cog = self.bot.get_cog("Audio")
-        if not audio_cog:
-            print("❌ Audio cog not loaded — cannot play sound.")
-            return
-
         try:
-            # Fake context to trigger play command
-            fake_ctx = SimpleNamespace()
-            fake_ctx.guild = after.channel.guild
-            fake_ctx.author = member
-            fake_ctx.voice_client = None
-            fake_ctx.channel = after.channel
-            fake_ctx.clean_content = source
-            fake_ctx.send = lambda *args, **kwargs: None
-
-            print(f"🎧 Asking Audio cog to queue sound for {member.display_name} in {after.channel}")
-
-            await audio_cog.cmd_play(fake_ctx, source)
-
+            print(f"🎧 Attempting to join {after.channel} for {member.display_name}")
+            # Connect and play using discord.py VoiceClient
+            vc = await after.channel.connect()
+            vc.play(discord.FFmpegPCMAudio(source))
+            while vc.is_playing():
+                await asyncio.sleep(1)
+            await vc.disconnect()
         except Exception as e:
-            print(f"⚠️ Error using Audio cog fallback: {e}")
+            print(f"⚠️ Error during join or playback for {member.display_name}: {e}")
             traceback.print_exc()
