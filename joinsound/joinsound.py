@@ -12,6 +12,7 @@ class JoinSound(commands.Cog):
         self.config = Config.get_conf(self, identifier=43219876)
         default_user = {"mp3_url": None}
         self.config.register_user(**default_user)
+        print("✅ JoinSound cog initialized.")
 
     @commands.command()
     @commands.has_permissions(administrator=True)
@@ -45,6 +46,11 @@ class JoinSound(commands.Cog):
         await att.save(file_path)
         await self.config.user(ctx.author).mp3_url.set(None)
         await ctx.send("✅ Your local join MP3 has been saved!")
+
+    @commands.command()
+    async def cogtest(self, ctx):
+        """Test if JoinSound cog is active."""
+        await ctx.send("✅ JoinSound cog is loaded and responding.")
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
