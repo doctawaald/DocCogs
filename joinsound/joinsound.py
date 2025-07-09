@@ -5,47 +5,107 @@ import asyncio
 import traceback
 
 class JoinSound(commands.Cog):
-    """Plays a sound when a user joins a voice channel using discord.py voice client."""
+    """Plays a sound when a user joins a voice channel."""
 
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=43219876)
         default_user = {"mp3_url": None}
+        default_guild = {"allowed_roles": []}
         self.config.register_user(**default_user)
-        print("✅ JoinSound cog initialized. Ensure PyNaCl is installed for voice support.")
+        self.config.register_guild(**default_guild)
+        print("✅ JoinSound cog initialized. Ensure Opus + PyNaCl are installed.")
 
     @commands.command()
-    @commands.has_permissions(administrator=True)
+    async def addjoinsoundrole(self, ctx, role: discord.Role):
+        """Add a role that can set join sounds (bot owner only)."""
+        if not await self.bot.is_owner(ctx.author):
+            return await ctx.send("❌ Only the bot owner can modify allowed roles.")
+        roles = await self.config.guild(ctx.guild).allowed_roles()
+        if role.id in roles:
+            return await ctx.send(f"❌ Role `{role.name}` is already allowed.")
+        roles.append(role.id)
+        await self.config.guild(ctx.guild).allowed_roles.set(roles)
+        await ctx.send(f"✅ Role `{role.name}` added to allowed join-sound roles.")
+
+    @commands.command()
+    async def removejoinsoundrole(self, ctx, role: discord.Role):
+        """Remove a role from allowed join-sound roles (bot owner only)."""
+        if not await self.bot.is_owner(ctx.author):
+            return await ctx.send("❌ Only the bot owner can modify allowed roles.")
+        roles = await self.config.guild(ctx.guild).allowed_roles()
+        if role.id not in roles:
+            return await ctx.send(f"❌ Role `{role.name}` is not in allowed roles.")
+        roles.remove(role.id)
+        await self.config.guild(ctx.guild).allowed_roles.set(roles)
+        await ctx.send(f"✅ Role `{role.name}` removed from allowed roles.")
+
+    @commands.command()
+    async def listjoinsoundroles(self, ctx):
+        """List roles allowed to set join sounds (bot owner only)."""
+        if not await self.bot.is_owner(ctx.author):
+            return await ctx.send("❌ Only the bot owner can view allowed roles.")
+        roles = await self.config.guild(ctx.guild).allowed_roles()
+        if not roles:
+            return await ctx.send("ℹ️ No roles are currently allowed to set join sounds.")
+        names = [
+            discord.utils.get(ctx.guild.roles, id=r).name
+            for r in roles
+            if discord.utils.get(ctx.guild.roles, id=r)
+        ]
+        await ctx.send("✅ Allowed join-sound roles: " + ", ".join(names))
+
+    @commands.command()
     async def joinsound(self, ctx, url: str = None):
         """
-        Set a join sound (admin only):
-        - Upload an mp3 as attachment if no URL provided.
+        Set your join sound:
+        - Upload an mp3 file as an attachment if no URL provided.
         - Or provide a direct .mp3 URL.
         """
+        # Permission check: owner or allowed role
+        if not await self.bot.is_owner(ctx.author):
+            allowed = await self.config.guild(ctx.guild).allowed_roles()
+            if not any(role.id in allowed for role in ctx.author.roles):
+                return await ctx.send("❌ You don't have permission to set join sounds.")
+
         folder = "data/joinsound/mp3s/"
         os.makedirs(folder, exist_ok=True)
+        local_path = os.path.join(folder, f"{ctx.author.id}.mp3")
 
+        # Clear previous audio settings
+        # Remove old local file if switching to URL or resetting
+        if os.path.isfile(local_path):
+            try:
+                os.remove(local_path)
+            except Exception as e:
+                print(f"⚠️ Could not remove old file: {e}")
+
+        # URL mode
         if url:
             if not url.lower().endswith(".mp3"):
-                await ctx.send("❌ The link must end with `.mp3`.")
-                return
+                return await ctx.send("❌ The link must end with `.mp3`.")
+            # Clear any old URL then set new
+            await self.config.user(ctx.author).mp3_url.clear()
             await self.config.user(ctx.author).mp3_url.set(url)
-            await ctx.send(f"✅ Your join MP3 URL has been set: {url}")
-            return
+            return await ctx.send(f"✅ Your join MP3 URL has been set: {url}")
 
+        # Upload mode
         if not ctx.message.attachments:
-            await ctx.send("📎 Upload a `.mp3` file or provide a URL.")
-            return
+            return await ctx.send("📎 Upload a `.mp3` file or provide a URL.")
 
         att = ctx.message.attachments[0]
         if not att.filename.lower().endswith(".mp3"):
-            await ctx.send("❌ Only `.mp3` files are allowed.")
-            return
+            return await ctx.send("❌ Only `.mp3` files are allowed.")
 
-        file_path = os.path.join(folder, f"{ctx.author.id}.mp3")
-        await att.save(file_path)
-        await self.config.user(ctx.author).mp3_url.set(None)
-        await ctx.send("✅ Your local join MP3 has been saved!")
+        # Clear old URL if uploading new file
+        await self.config.user(ctx.author).mp3_url.clear()
+        # Save new file
+        try:
+            await att.save(local_path)
+        except Exception as e:
+            return await ctx.send(f"❌ Failed to save file: {e}")
+
+        return await ctx.send("✅ Your local join MP3 has been saved!")
 
     @commands.command()
     async def cogtest(self, ctx):
@@ -72,7 +132,6 @@ class JoinSound(commands.Cog):
 
         try:
             print(f"🎧 Attempting to join {after.channel} for {member.display_name}")
-            # Connect and play using discord.py VoiceClient
             vc = await after.channel.connect()
             vc.play(discord.FFmpegPCMAudio(source))
             while vc.is_playing():
