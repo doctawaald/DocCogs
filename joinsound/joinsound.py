@@ -59,20 +59,25 @@ class JoinSound(commands.Cog):
         audio_available = os.path.isfile(local_path) or url
 
         if not audio_available:
-            print(f"🛑 No audio set for {member.display_name} — not joining.")
+            print(f"🛑 No audio set for {member.display_name} — not playing anything.")
             return
 
         source = local_path if os.path.isfile(local_path) else url
 
+        audio_cog = self.bot.get_cog("Audio")
+        if not audio_cog:
+            print("❌ Audio cog not loaded — cannot play sound.")
+            return
+
         try:
-            print(f"🎧 Attempting to join {after.channel} for {member.display_name}")
-            vc = await after.channel.connect()
-            if audio_available:
-                vc.play(discord.FFmpegPCMAudio(source))
-                while vc.is_playing():
-                    await asyncio.sleep(1)
-            await asyncio.sleep(1.5)
-            await vc.disconnect()
+            print(f"🎧 Asking Audio cog to play for {member.display_name} in {after.channel}")
+            await audio_cog.connect_channel(after.channel)
+
+            if os.path.isfile(source):
+                await audio_cog.play_path(after.guild, source)
+            else:
+                await audio_cog.play_url(after.guild, source)
+
         except Exception as e:
-            print(f"⚠️ Error during join or playback for {member.display_name}: {e}")
+            print(f"⚠️ Error using Audio cog for playback: {e}")
             traceback.print_exc()
