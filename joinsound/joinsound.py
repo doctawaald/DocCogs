@@ -5,7 +5,7 @@ import asyncio
 import traceback
 
 class JoinSound(commands.Cog):
-    """Plays a sound when a user joins a voice channel using Audio cog cmd_play."""
+    """Plays a sound when a user joins a voice channel via the Audio cog (URL-based)."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -61,8 +61,8 @@ class JoinSound(commands.Cog):
             allowed = await self.config.guild(ctx.guild).allowed_roles()
             if not any(r.id in allowed for r in ctx.author.roles):
                 return await ctx.send("❌ You don't have permission to set join sounds.")
-        if not url.lower().endswith('.mp3'):
-            return await ctx.send("❌ URL must end with .mp3")
+        if not url.lower().endswith(".mp3"):
+            return await ctx.send("❌ The URL must end with .mp3")
         await self.config.user(ctx.author).mp3_url.set(url)
         await ctx.send(f"✅ Join sound URL set: {url}")
 
@@ -80,7 +80,7 @@ class JoinSound(commands.Cog):
         if not url:
             print(f"🛑 No URL set for {member.display_name}.")
             return
-        audio = self.bot.get_cog('Audio')
+        audio = self.bot.get_cog("Audio")
         if not audio:
             print("❌ Audio cog missing.")
             return
@@ -95,21 +95,10 @@ class JoinSound(commands.Cog):
         fake.clean_content = url
         fake.send = lambda *a, **k: None
         try:
-                        if hasattr(audio, 'command_play'):
-                print(f"🎧 Invoking Audio.command_play for {member.display_name}")
-                cmd = audio.command_play
-                # Command takes only (self, ctx); URL is in fake.clean_content
-                await cmd.callback(audio, fake)
-            else:
-                print("⚠️ Audio cog has no command_play to invoke.")
+            print(f"🎧 Calling Audio.command_play for {member.display_name}")
+            cmd = audio.get_command("play")
+            # command callback signature: (self, ctx)
+            await cmd.callback(audio, fake)
         except Exception as e:
-            print(f"⚠️ Error invoking play command: {e}")
-            traceback.print_exc()")
-                cmd = audio.command_play
-                # invoke the underlying callback of the play command
-                await cmd.callback(audio, fake, url)
-            else:
-                print("⚠️ Audio cog has no command_play method to call")
-        except Exception as e:
-            print(f"⚠️ Error invoking play command: {e}")
+            print(f"⚠️ Error in command_play: {e}")
             traceback.print_exc()
