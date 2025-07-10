@@ -1,11 +1,9 @@
 from redbot.core import commands, Config
 import discord
-import os
-import asyncio
 import traceback
 
 class JoinSound(commands.Cog):
-    """Plays a sound when a user joins a voice channel using Audio cog cmd_play."""
+    """Plays a sound when a user joins a voice channel via the Audio cog (URL-only)."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -14,7 +12,7 @@ class JoinSound(commands.Cog):
         default_guild = {"allowed_roles": []}
         self.config.register_user(**default_user)
         self.config.register_guild(**default_guild)
-        print("✅ JoinSound cog initialized: using Audio.cmd_play for URL playback.")
+        print("✅ JoinSound cog initialized: using Audio.play command.")
 
     @commands.command()
     async def addjoinsoundrole(self, ctx, role: discord.Role):
@@ -55,14 +53,14 @@ class JoinSound(commands.Cog):
     async def joinsound(self, ctx, url: str):
         """
         Set your join sound URL (.mp3 only):
-        - Provide a direct `.mp3` URL as argument.
+        Provide a direct `.mp3` URL as argument.
         """
         if not await self.bot.is_owner(ctx.author):
             allowed = await self.config.guild(ctx.guild).allowed_roles()
             if not any(r.id in allowed for r in ctx.author.roles):
                 return await ctx.send("❌ You don't have permission to set join sounds.")
         if not url.lower().endswith('.mp3'):
-            return await ctx.send("❌ URL must end with .mp3")
+            return await ctx.send("❌ The URL must end with .mp3")
         await self.config.user(ctx.author).mp3_url.set(url)
         await ctx.send(f"✅ Join sound URL set: {url}")
 
@@ -93,23 +91,15 @@ class JoinSound(commands.Cog):
         fake.guild = after.channel.guild
         fake.channel = after.channel
         fake.clean_content = url
-        fake.send = lambda *a, **k: None
+        fake.send = lambda *args, **kwargs: None
         try:
-                        if hasattr(audio, 'command_play'):
-                print(f"🎧 Invoking Audio.command_play for {member.display_name}")
-                cmd = audio.command_play
-                # Command takes only (self, ctx); URL is in fake.clean_content
-                await cmd.callback(audio, fake)
-            else:
-                print("⚠️ Audio cog has no command_play to invoke.")
-        except Exception as e:
-            print(f"⚠️ Error invoking play command: {e}")
-            traceback.print_exc()")
-                cmd = audio.command_play
-                # invoke the underlying callback of the play command
-                await cmd.callback(audio, fake, url)
-            else:
-                print("⚠️ Audio cog has no command_play method to call")
+            print(f"🎧 Invoking Audio.play for {member.display_name}")
+            cmd = audio.all_commands.get('play')
+            if not cmd:
+                print("⚠️ 'play' command not found on Audio cog.")
+                return
+            # call callback (self, ctx)
+            await cmd.callback(audio, fake)
         except Exception as e:
             print(f"⚠️ Error invoking play command: {e}")
             traceback.print_exc()
