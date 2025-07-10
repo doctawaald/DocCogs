@@ -5,7 +5,7 @@ import asyncio
 import traceback
 
 class JoinSound(commands.Cog):
-    """Plays a sound when a user joins a voice channel with persistent connections and supports URLs and local files."""
+    """Plays a sound when a user joins a voice channel with persistent connections and supports both URLs and local files."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -14,9 +14,8 @@ class JoinSound(commands.Cog):
         default_guild = {"allowed_roles": []}
         self.config.register_user(**default_user)
         self.config.register_guild(**default_guild)
-        self.voice_clients = {}  # guild_id -> VoiceClient
-        self.disconnect_tasks = {}  # guild_id -> Task
-        print("✅ JoinSound cog initialized with persistent voice connections.")
+        self.disconnect_tasks = {}  # guild_id -> asyncio.Task
+        print("✅ JoinSound cog initialized with improved voice handling.")
 
     @commands.command()
     async def addjoinsoundrole(self, ctx, role: discord.Role):
@@ -50,10 +49,7 @@ class JoinSound(commands.Cog):
         roles = await self.config.guild(ctx.guild).allowed_roles()
         if not roles:
             return await ctx.send("ℹ️ No roles are currently allowed to set join sounds.")
-        names = [
-            discord.utils.get(ctx.guild.roles, id=r).name
-            for r in roles if discord.utils.get(ctx.guild.roles, id=r)
-        ]
+        names = [discord.utils.get(ctx.guild.roles, id=r).name for r in roles if discord.utils.get(ctx.guild.roles, id=r)]
         await ctx.send("✅ Allowed join-sound roles: " + ", ".join(names))
 
     @commands.command()
@@ -63,6 +59,7 @@ class JoinSound(commands.Cog):
         - Provide a direct .mp3 URL as argument.
         - Or upload a .mp3 file as attachment if no URL provided.
         """
+        # Permission check: bot owner or allowed role
         if not await self.bot.is_owner(ctx.author):
             allowed = await self.config.guild(ctx.guild).allowed_roles()
             if not any(r.id in allowed for r in ctx.author.roles):
@@ -104,19 +101,7 @@ class JoinSound(commands.Cog):
     @commands.command()
     async def cogtest(self, ctx):
         """Test if JoinSound cog is loaded."""
-        await ctx.send("✅ JoinSound cog is active with persistent connections.")
-
-    async def _idle_disconnect(self, guild_id, delay=60):
-        await asyncio.sleep(delay)
-        vc = self.voice_clients.get(guild_id)
-        if vc and vc.is_connected():
-            try:
-                await vc.disconnect()
-                print(f"🔌 Disconnected idle voice client for guild {guild_id}")
-            except Exception:
-                pass
-        self.voice_clients.pop(guild_id, None)
-        self.disconnect_tasks.pop(guild_id, None)
+        await ctx.send("✅ JoinSound cog is active with improved voice handling.")
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
@@ -124,6 +109,7 @@ class JoinSound(commands.Cog):
         if before.channel == after.channel or member.bot or after.channel is None:
             return
 
+        # Determine source: local file or URL
         folder = "data/joinsound/mp3s/"
         local_path = os.path.join(folder, f"{member.id}.mp3")
         url = await self.config.user(member).mp3_url()
@@ -135,23 +121,38 @@ class JoinSound(commands.Cog):
             print(f"🛑 No audio set for {member.display_name}.")
             return
 
-        guild_id = member.guild.id
-        vc = self.voice_clients.get(guild_id)
-        if not vc or not vc.is_connected():
+        guild = after.channel.guild
+        # Find existing voice client
+        vc = discord.utils.get(self.bot.voice_clients, guild=guild)
+        try:
+            if vc is None:
+                print(f"🎧 Connecting to voice channel {after.channel} for guild {guild.id}")
+                vc = await after.channel.connect()
+            elif vc.channel.id != after.channel.id:
+                print(f"🔀 Moving voice client to {after.channel}")
+                await vc.move_to(after.channel)
+        except discord.errors.ClientException as e:
+            print(f"⚠️ Voice connection issue: {e}")
+            traceback.print_exc()
+            # Attempt fresh connect
             try:
                 vc = await after.channel.connect()
-                self.voice_clients[guild_id] = vc
-                print(f"🎧 Connected persistent voice client in guild {guild_id}")
-            except Exception as e:
-                print(f"⚠️ Cannot connect voice for {member.display_name}: {e}")
-                traceback.print_exc()
+            except Exception as e2:
+                print(f"⚠️ Failed fresh connect: {e2}")
                 return
+        except Exception as e:
+            print(f"⚠️ Unexpected error connecting/moving: {e}")
+            traceback.print_exc()
+            return
 
-        task = self.disconnect_tasks.get(guild_id)
+        # Cancel pending idle disconnect if any
+        task = self.disconnect_tasks.get(guild.id)
         if task:
             task.cancel()
 
+        # Play audio
         try:
+            print(f"▶️ Playing {source} for {member.display_name}")
             vc.play(discord.FFmpegPCMAudio(source))
             while vc.is_playing():
                 await asyncio.sleep(0.1)
@@ -159,4 +160,15 @@ class JoinSound(commands.Cog):
             print(f"⚠️ Playback error for {member.display_name}: {e}")
             traceback.print_exc()
 
-        self.disconnect_tasks[guild_id] = asyncio.create_task(self._idle_disconnect(guild_id))
+        # Schedule idle disconnect in 30s
+        async def _idle_disconnect():
+            await asyncio.sleep(30)
+            if vc.is_connected():
+                try:
+                    await vc.disconnect()
+                    print(f"🔌 Idle disconnected voice client for guild {guild.id}")
+                except:
+                    pass
+            self.disconnect_tasks.pop(guild.id, None)
+
+        self.disconnect_tasks[guild.id] = asyncio.create_task(_idle_disconnect())
