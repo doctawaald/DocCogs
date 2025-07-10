@@ -126,7 +126,7 @@ class JoinSound(commands.Cog):
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
-        # If bot was disconnected externally, suspend auto-join for this guild
+                # If bot was disconnected externally, suspend auto-join for the next user join only
         if member.id == self.bot.user.id and before.channel and after.channel is None:
             gid = before.channel.guild.id
             self.skip_guilds.add(gid)
@@ -141,7 +141,14 @@ class JoinSound(commands.Cog):
             task = self.disconnect_tasks.pop(gid, None)
             if task:
                 task.cancel()
-            print(f"🔔 External disconnect detected for guild {gid}, auto-join suspended.")
+            print(f"🔔 External disconnect detected for guild {gid}, will skip next user join.")
+            return
+
+        # Skip auto-join on the next user join after external disconnect, then resume auto-join
+        gid = after.channel.guild.id if after.channel else (before.channel.guild.id if before.channel else None)
+        if gid in self.skip_guilds and member.id != self.bot.user.id and before.channel is None and after.channel:
+            self.skip_guilds.remove(gid)
+            print(f"🔔 Skipping auto-join for the first user join after external disconnect in guild {gid}.")
             return
 
         print(f"🔔 Voice update: {member} from {before.channel} to {after.channel}")
