@@ -109,36 +109,39 @@ class JoinSound(commands.Cog):
     async def on_voice_state_update(self, member, before, after):
         if before.channel == after.channel or member.bot or after.channel is None:
             return
-        # determine source
+                # determine source: local file or URL
         folder = "data/joinsound/mp3s/"
-        local = os.path.join(folder, f"{member.id}.mp3")
+        local_path = os.path.join(folder, f"{member.id}.mp3")
         url = await self.config.user(member).mp3_url()
-        if os.path.isfile(local):
-            source = local
-            play_func = 'path'
+        if os.path.isfile(local_path):
+            source = local_path
         elif url:
             source = url
-            play_func = 'url'
         else:
             return
+
         audio = self.bot.get_cog('Audio')
         if not audio:
             print("❌ Audio cog missing")
             return
-        # create fake ctx
-        fake_ctx = type('C', (), {})()
+
+        # create fake context for Audio.play command
+        class F:
+            pass
+        fake_ctx = F()
         fake_ctx.bot = self.bot
         fake_ctx.author = member
         fake_ctx.guild = after.channel.guild
         fake_ctx.channel = after.channel
+        fake_ctx.clean_content = source
         fake_ctx.send = lambda *a, **k: None
+
         try:
-            print(f"🎧 Queuing join sound ({play_func}) for {member.display_name}")
-            if play_func == 'path':
-                await audio.play_path(fake_ctx, source)
-            else:
-                await audio.play_url(fake_ctx, source)
+            print(f"🎧 Queuing join sound for {member.display_name}")
+            # Use the generic play command for both file and URL
+            await audio.play(fake_ctx, source)
         except Exception as e:
             print(f"⚠️ Error queuing audio: {e}")
             traceback.print_exc()
-        # auto disconnect handled by Audio cog
+
+        # auto-disconnect handled by Audio cog (based on server settings)
