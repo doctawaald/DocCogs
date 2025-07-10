@@ -112,7 +112,22 @@ class JoinSound(commands.Cog):
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
-        # If bot was disconnected externally, skip auto-join
+                # If bot was disconnected externally, skip and remove voice client to prevent auto-reconnect
+        if member.id == self.bot.user.id and before.channel and after.channel is None:
+            print("🔔 Bot was disconnected externally, skipping auto-join and cleaning up.")
+            guild_id = before.channel.guild.id
+            # Remove and disconnect underlying vc to stop resume
+            vc = self.voice_clients.pop(guild_id, None)
+            if vc:
+                try:
+                    await vc.disconnect()
+                except Exception as e:
+                    print(f"⚠️ Error cleaning up voice client: {e}")
+            # Cancel any pending disconnect task
+            task = self.disconnect_tasks.pop(guild_id, None)
+            if task:
+                task.cancel()
+            return
         if member.id == self.bot.user.id and before.channel and after.channel is None:
             print("🔔 Bot was disconnected externally, skipping auto-join.")
             # Do not reconnect
