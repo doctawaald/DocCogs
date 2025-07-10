@@ -95,8 +95,13 @@ class JoinSound(commands.Cog):
         fake.clean_content = url
         fake.send = lambda *a, **k: None
         try:
-            print(f"🎧 Calling Audio.cmd_play for {member.display_name}")
-            await audio.cmd_play(fake, url)
+            if hasattr(audio, 'command_play'):
+                print(f"🎧 Calling Audio.command_play for {member.display_name}")
+                cmd = audio.command_play
+                # invoke the underlying callback of the play command
+                await cmd.callback(audio, fake, url)
+            else:
+                print("⚠️ Audio cog has no command_play method to call")
         except Exception as e:
-            print(f"⚠️ Error in cmd_play: {e}")
+            print(f"⚠️ Error invoking play command: {e}")
             traceback.print_exc()
