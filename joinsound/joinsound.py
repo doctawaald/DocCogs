@@ -5,32 +5,22 @@ import asyncio
 import traceback
 
 class JoinSound(commands.Cog):
-    """Plays a sound when a user joins a voice channel (URL or upload), with role permissions and auto-disconnect,
-    and no auto-reconnect after external disconnect until manually re-enabled."""
+    """Plays a sound when a user joins a voice channel (URL or upload), with role permissions and auto-disconnect."""
 
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=43219876)
         default_user = {"mp3_url": None}
-        default_guild = {"allowed_roles": [], "auto_disconnect": True, "disconnect_delay": 30}
+        default_guild = {
+            "allowed_roles": [],
+            "auto_disconnect": True,
+            "disconnect_delay": 30
+        }
         self.config.register_user(**default_user)
         self.config.register_guild(**default_guild)
         self.voice_clients = {}       # guild_id -> VoiceClient
         self.disconnect_tasks = {}    # guild_id -> asyncio.Task
-        self.skip_guilds = set()      # guild_ids where auto-join is suspended
         print("✅ JoinSound cog initialized.")
-
-    @commands.command()
-    async def enableautojoin(self, ctx):
-        """Re-enable auto-join after external disconnect (bot owner only)."""
-        if not await self.bot.is_owner(ctx.author):
-            return await ctx.send("❌ Only the bot owner can re-enable auto-join.")
-        gid = ctx.guild.id
-        if gid in self.skip_guilds:
-            self.skip_guilds.remove(gid)
-            await ctx.send("🔓 Auto-join has been re-enabled for this server.")
-        else:
-            await ctx.send("ℹ️ Auto-join was not disabled.")
 
     @commands.command()
     async def addjoinsoundrole(self, ctx, role: discord.Role):
@@ -91,7 +81,7 @@ class JoinSound(commands.Cog):
     async def joinsound(self, ctx, url: str = None):
         """
         Set your join sound:
-        - Provide a direct .mp3 URL.
+        - Provide a direct .mp3 URL as argument.
         - Or upload a .mp3 file as attachment if no URL provided.
         """
         if not await self.bot.is_owner(ctx.author):
@@ -126,40 +116,29 @@ class JoinSound(commands.Cog):
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
-                # If bot was disconnected externally, suspend auto-join for the next user join only
+        # If bot was disconnected externally, prevent auto-reconnect
         if member.id == self.bot.user.id and before.channel and after.channel is None:
-            gid = before.channel.guild.id
-            self.skip_guilds.add(gid)
-            vc = self.voice_clients.pop(gid, None)
-            if vc and hasattr(vc, '_should_reconnect'):
-                vc._should_reconnect = False
+            guild_id = before.channel.guild.id
+            vc = self.voice_clients.pop(guild_id, None)
             if vc:
+                if hasattr(vc, '_should_reconnect'):
+                    vc._should_reconnect = False
                 try:
                     await vc.disconnect()
                 except:
                     pass
-            task = self.disconnect_tasks.pop(gid, None)
-            if task:
-                task.cancel()
-            print(f"🔔 External disconnect detected for guild {gid}, will skip next user join.")
-            return
-
-        # Skip auto-join on the next user join after external disconnect, then resume auto-join
-        gid = after.channel.guild.id if after.channel else (before.channel.guild.id if before.channel else None)
-        if gid in self.skip_guilds and member.id != self.bot.user.id and before.channel is None and after.channel:
-            self.skip_guilds.remove(gid)
-            print(f"🔔 Skipping auto-join for the first user join after external disconnect in guild {gid}.")
+                task = self.disconnect_tasks.pop(guild_id, None)
+                if task:
+                    task.cancel()
+            print(f"🔔 External disconnect for guild {guild_id}, will not reconnect until next user join.")
             return
 
         print(f"🔔 Voice update: {member} from {before.channel} to {after.channel}")
         if before.channel == after.channel or member.bot or after.channel is None:
             return
-        gid = after.channel.guild.id
-        if gid in self.skip_guilds:
-            print(f"⏭️ Auto-join suspended for guild {gid}, skipping.")
-            return
 
-        # Determine source
+        guild_id = after.channel.guild.id
+        # Determine audio source
         url = await self.config.user(member).mp3_url()
         folder = "data/joinsound/mp3s/"
         path = os.path.join(folder, f"{member.id}.mp3")
@@ -167,21 +146,16 @@ class JoinSound(commands.Cog):
         if not source:
             return
 
-        # Connect or move
-        vc = self.voice_clients.get(gid)
+        # Connect or move voice client
+        vc = self.voice_clients.get(guild_id)
         try:
             if vc is None or not vc.is_connected():
                 vc = await after.channel.connect(reconnect=False)
-                # deafen for privacy
                 try:
                     await vc.guild.me.edit(deafen=True)
                 except:
                     pass
-                try:
-                    await vc.guild.me.edit(deafen=True)
-                except:
-                    pass
-                self.voice_clients[gid] = vc
+                self.voice_clients[guild_id] = vc
             elif vc.channel.id != after.channel.id:
                 await vc.move_to(after.channel)
         except Exception as e:
@@ -189,7 +163,7 @@ class JoinSound(commands.Cog):
             traceback.print_exc()
             return
 
-        # Play audio
+        # Play the sound
         try:
             vc.play(discord.FFmpegPCMAudio(source))
             while vc.is_playing():
@@ -199,13 +173,13 @@ class JoinSound(commands.Cog):
             traceback.print_exc()
             return
 
-        # Auto-disconnect
+        # Schedule auto-disconnect
         if await self.config.guild(after.channel.guild).auto_disconnect():
             delay = await self.config.guild(after.channel.guild).disconnect_delay()
-            task = self.disconnect_tasks.get(gid)
+            task = self.disconnect_tasks.get(guild_id)
             if task:
                 task.cancel()
-            self.disconnect_tasks[gid] = asyncio.create_task(self._idle_disconnect(gid, delay))
+            self.disconnect_tasks[guild_id] = asyncio.create_task(self._idle_disconnect(guild_id, delay))
 
     async def _idle_disconnect(self, guild_id, delay):
         await asyncio.sleep(delay)
