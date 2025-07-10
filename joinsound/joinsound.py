@@ -120,7 +120,12 @@ class JoinSound(commands.Cog):
             vc = self.voice_clients.pop(guild_id, None)
             if vc:
                 try:
+                    # prevent discord.py from trying to resume automatically
+                    if hasattr(vc, '_should_reconnect'):
+                        vc._should_reconnect = False
                     await vc.disconnect()
+                except Exception as e:
+                    print(f"⚠️ Error cleaning up voice client: {e}")()
                 except Exception as e:
                     print(f"⚠️ Error cleaning up voice client: {e}")
             # Cancel any pending disconnect task
