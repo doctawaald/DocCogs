@@ -5,7 +5,7 @@ import asyncio
 import traceback
 
 class JoinSound(commands.Cog):
-    """Plays a sound when a user joins a voice channel using the Audio cog (Lavalink or FFmpeg)."""
+    """Plays a sound when a user joins a voice channel using the Audio cog (Lavalink or FFmpeg), with debugging and fallback."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -15,7 +15,7 @@ class JoinSound(commands.Cog):
         self.config.register_user(**default_user)
         self.config.register_guild(**default_guild)
         self.disconnect_tasks = {}
-        print("✅ JoinSound cog initialized using Audio cog playback.")
+        print("✅ JoinSound cog initialized with debug and playback fallback.")
 
     @commands.command()
     async def toggledisconnect(self, ctx):
@@ -38,31 +38,7 @@ class JoinSound(commands.Cog):
         await ctx.send(f"⏱️ Auto-disconnect delay set to {seconds} seconds.")
 
     @commands.command()
-    async def addjoinsoundrole(self, ctx, role: discord.Role):
-        """Grant a role permission to set join sounds (bot owner only)."""
-        if not await self.bot.is_owner(ctx.author):
-            return await ctx.send("❌ Only the bot owner can modify allowed roles.")
-        roles = await self.config.guild(ctx.guild).allowed_roles()
-        if role.id in roles:
-            return await ctx.send(f"❌ Role `{role.name}` already allowed.")
-        roles.append(role.id)
-        await self.config.guild(ctx.guild).allowed_roles.set(roles)
-        await ctx.send(f"✅ Role `{role.name}` added.")
-
-    @commands.command()
-    async def removejoinsoundrole(self, ctx, role: discord.Role):
-        """Revoke a role's permission to set join sounds (bot owner only)."""
-        if not await self.bot.is_owner(ctx.author):
-            return await ctx.send("❌ Only the bot owner can modify allowed roles.")
-        roles = await self.config.guild(ctx.guild).allowed_roles()
-        if role.id not in roles:
-            return await ctx.send(f"❌ Role `{role.name}` not in allowed list.")
-        roles.remove(role.id)
-        await self.config.guild(ctx.guild).allowed_roles.set(roles)
-        await ctx.send(f"✅ Role `{role.name}` removed.")
-
-    @commands.command()
-    async def listjoinsoundroles(self, ctx):
+    async def joinroles(self, ctx):
         """List roles permitted to set join sounds."""
         if not await self.bot.is_owner(ctx.author):
             return await ctx.send("❌ Only the bot owner can view allowed roles.")
@@ -73,13 +49,31 @@ class JoinSound(commands.Cog):
         await ctx.send("✅ Allowed roles: " + ", ".join(names))
 
     @commands.command()
+    async def joinrole(self, ctx, add: bool, role: discord.Role):
+        """Add (`True`) or remove (`False`) a role from allowed join-sound roles (bot owner only)."""
+        if not await self.bot.is_owner(ctx.author):
+            return await ctx.send("❌ Only the bot owner can modify roles.")
+        roles = await self.config.guild(ctx.guild).allowed_roles()
+        if add:
+            if role.id in roles:
+                return await ctx.send(f"❌ Role `{role.name}` already allowed.")
+            roles.append(role.id)
+            action = 'added'
+        else:
+            if role.id not in roles:
+                return await ctx.send(f"❌ Role `{role.name}` not in allowed list.")
+            roles.remove(role.id)
+            action = 'removed'
+        await self.config.guild(ctx.guild).allowed_roles.set(roles)
+        await ctx.send(f"✅ Role `{role.name}` {action}.")
+
+    @commands.command()
     async def joinsound(self, ctx, url: str = None):
         """Set your join sound (URL or upload local file)."""
         if not await self.bot.is_owner(ctx.author):
             allowed = await self.config.guild(ctx.guild).allowed_roles()
             if not any(r.id in allowed for r in ctx.author.roles):
                 return await ctx.send("❌ No permission.")
-        # prepare folder
         folder = "data/joinsound/mp3s/"
         os.makedirs(folder, exist_ok=True)
         local = os.path.join(folder, f"{ctx.author.id}.mp3")
@@ -92,7 +86,7 @@ class JoinSound(commands.Cog):
                 return await ctx.send("❌ URL must end with .mp3")
             await self.config.user(ctx.author).mp3_url.set(url)
             return await ctx.send(f"✅ Join sound URL set: {url}")
-        # upload mode
+        # upload
         if not ctx.message.attachments:
             return await ctx.send("📎 Provide URL or upload .mp3")
         att = ctx.message.attachments[0]
@@ -103,45 +97,54 @@ class JoinSound(commands.Cog):
 
     @commands.command()
     async def cogtest(self, ctx):
+        """Test if JoinSound cog active."""
         await ctx.send("✅ JoinSound cog active.")
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
+        print(f"🔔 UPDATE: {member} from {before.channel} to {after.channel}")
         if before.channel == after.channel or member.bot or after.channel is None:
+            print("⏭️ skipping")
             return
-                # determine source: local file or URL
+        # determine source
         folder = "data/joinsound/mp3s/"
-        local_path = os.path.join(folder, f"{member.id}.mp3")
+        local = os.path.join(folder, f"{member.id}.mp3")
         url = await self.config.user(member).mp3_url()
-        if os.path.isfile(local_path):
-            source = local_path
-        elif url:
-            source = url
-        else:
+        source = local if os.path.isfile(local) else url
+        if not source:
+            print(f"🛑 no source for {member.display_name}")
             return
-
+        # get audio cog
         audio = self.bot.get_cog('Audio')
+        print(f"Audio cog methods: {dir(audio) if audio else 'None'}")
         if not audio:
             print("❌ Audio cog missing")
             return
-
-        # create fake context for Audio.play command
-        class F:
-            pass
-        fake_ctx = F()
-        fake_ctx.bot = self.bot
-        fake_ctx.author = member
-        fake_ctx.guild = after.channel.guild
-        fake_ctx.channel = after.channel
-        fake_ctx.clean_content = source
-        fake_ctx.send = lambda *a, **k: None
-
+        # fake context
+        class F: pass
+        fake = F()
+        fake.bot = self.bot
+        fake.author = member
+        fake.guild = after.channel.guild
+        fake.channel = after.channel
+        fake.clean_content = source
+        fake.send = lambda *a, **k: None
+        # try various methods
         try:
-            print(f"🎧 Queuing join sound for {member.display_name}")
-            # Use the generic play command for both file and URL
-            await audio.play(fake_ctx, source)
+            if hasattr(audio, 'cmd_play'):
+                print("Using cmd_play")
+                await audio.cmd_play(fake, source)
+            elif hasattr(audio, 'play'):
+                print("Using play")
+                await audio.play(fake, source)
+            elif hasattr(audio, 'play_path'):
+                print("Using play_path")
+                await audio.play_path(fake, source)
+            elif hasattr(audio, 'play_url'):
+                print("Using play_url")
+                await audio.play_url(fake, source)
+            else:
+                print("⚠️ No playback method found on Audio cog")
         except Exception as e:
-            print(f"⚠️ Error queuing audio: {e}")
+            print(f"⚠️ Error playing via Audio cog: {e}")
             traceback.print_exc()
-
-        # auto-disconnect handled by Audio cog (based on server settings)
