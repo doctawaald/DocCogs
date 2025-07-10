@@ -5,18 +5,32 @@ import asyncio
 import traceback
 
 class JoinSound(commands.Cog):
-    """Plays a sound when a user joins a voice channel (URL or upload), with role permissions and auto-disconnect toggles."""
+    """Plays a sound when a user joins a voice channel (URL or upload), with role permissions, auto-disconnect,
+    and disables auto-join on manual disconnect."""
 
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=43219876)
         default_user = {"mp3_url": None}
-        default_guild = {"allowed_roles": [], "auto_disconnect": True, "disconnect_delay": 30}
+        default_guild = {
+            "allowed_roles": [],
+            "auto_disconnect": True,
+            "disconnect_delay": 30,
+            "auto_join": True
+        }
         self.config.register_user(**default_user)
         self.config.register_guild(**default_guild)
         self.voice_clients = {}       # guild_id -> VoiceClient
         self.disconnect_tasks = {}    # guild_id -> asyncio.Task
-        print("✅ JoinSound cog initialized. Make sure libsodium, PyNaCl and ffmpeg are installed.")
+        print("✅ JoinSound cog initialized.")
+
+    @commands.command()
+    async def enableautojoin(self, ctx):
+        """Re-enable auto-join in this server (bot owner only)."""
+        if not await self.bot.is_owner(ctx.author):
+            return await ctx.send("❌ Only bot owner can re-enable auto-join.")
+        await self.config.guild(ctx.guild).auto_join.set(True)
+        await ctx.send("✅ Auto-join has been re-enabled.")
 
     @commands.command()
     async def addjoinsoundrole(self, ctx, role: discord.Role):
@@ -44,13 +58,17 @@ class JoinSound(commands.Cog):
 
     @commands.command()
     async def listjoinsoundroles(self, ctx):
-        """List roles permitted to set join sounds."""
+        """List roles permitted to set join sounds (bot owner only)."""
         if not await self.bot.is_owner(ctx.author):
             return await ctx.send("❌ Only the bot owner can view allowed roles.")
         roles = await self.config.guild(ctx.guild).allowed_roles()
         if not roles:
             return await ctx.send("ℹ️ No roles currently allowed.")
-        names = [discord.utils.get(ctx.guild.roles, id=r).name for r in roles if discord.utils.get(ctx.guild.roles, id=r)]
+        names = [
+            discord.utils.get(ctx.guild.roles, id=r).name
+            for r in roles
+            if discord.utils.get(ctx.guild.roles, id=r)
+        ]
         await ctx.send("✅ Allowed roles: " + ", ".join(names))
 
     @commands.command()
@@ -87,16 +105,14 @@ class JoinSound(commands.Cog):
         folder = "data/joinsound/mp3s/"
         os.makedirs(folder, exist_ok=True)
         path = os.path.join(folder, f"{ctx.author.id}.mp3")
-        # clear old
-        if os.path.isfile(path): os.remove(path)
+        if os.path.isfile(path):
+            os.remove(path)
         await self.config.user(ctx.author).mp3_url.clear()
-        # URL mode
         if url:
             if not url.lower().endswith('.mp3'):
                 return await ctx.send("❌ URL must end with .mp3")
             await self.config.user(ctx.author).mp3_url.set(url)
             return await ctx.send(f"✅ Join sound URL set: {url}")
-        # File upload
         if not ctx.message.attachments:
             return await ctx.send("📎 Provide a .mp3 URL or upload a .mp3 file.")
         att = ctx.message.attachments[0]
@@ -115,17 +131,30 @@ class JoinSound(commands.Cog):
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
+        # Detect manual bot disconnect -> disable auto-join
+        if member.id == self.bot.user.id and before.channel is not None and after.channel is None:
+            await self.config.guild(before.channel.guild).auto_join.set(False)
+            print("🔒 Auto-join disabled due to manual disconnect.")
+            return
+
         print(f"🔔 Voice update: {member} from {before.channel} to {after.channel}")
         if before.channel == after.channel or member.bot or after.channel is None:
             return
-        # determine source
+
+        guild = after.channel.guild
+        if not await self.config.guild(guild).auto_join():
+            print("⏭️ Auto-join disabled, skipping.")
+            return
+
+        # Determine source
         url = await self.config.user(member).mp3_url()
         folder = "data/joinsound/mp3s/"
         path = os.path.join(folder, f"{member.id}.mp3")
         source = url if not os.path.isfile(path) else path
         if not source:
             return
-        guild = after.channel.guild
+
+        # Connect or move
         vc = self.voice_clients.get(guild.id)
         try:
             if vc is None or not vc.is_connected():
@@ -141,7 +170,8 @@ class JoinSound(commands.Cog):
             print(f"⚠️ Connect error: {e}")
             traceback.print_exc()
             return
-        # play
+
+        # Play
         try:
             vc.play(discord.FFmpegPCMAudio(source))
             while vc.is_playing():
@@ -150,7 +180,8 @@ class JoinSound(commands.Cog):
             print(f"⚠️ Playback error: {e}")
             traceback.print_exc()
             return
-        # auto disconnect
+
+        # Auto-disconnect
         if await self.config.guild(guild).auto_disconnect():
             delay = await self.config.guild(guild).disconnect_delay()
             task = self.disconnect_tasks.get(guild.id)
