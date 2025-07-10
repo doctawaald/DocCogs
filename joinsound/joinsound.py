@@ -5,7 +5,7 @@ import asyncio
 import traceback
 
 class JoinSound(commands.Cog):
-    """Plays a sound when a user joins a voice channel with persistent connections."""
+    """Plays a sound when a user joins a voice channel with persistent connections and supports URLs and local files."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -14,8 +14,8 @@ class JoinSound(commands.Cog):
         default_guild = {"allowed_roles": []}
         self.config.register_user(**default_user)
         self.config.register_guild(**default_guild)
-        self.voice_clients = {}
-        self.disconnect_tasks = {}
+        self.voice_clients = {}  # guild_id -> VoiceClient
+        self.disconnect_tasks = {}  # guild_id -> Task
         print("✅ JoinSound cog initialized with persistent voice connections.")
 
     @commands.command()
@@ -50,7 +50,10 @@ class JoinSound(commands.Cog):
         roles = await self.config.guild(ctx.guild).allowed_roles()
         if not roles:
             return await ctx.send("ℹ️ No roles are currently allowed to set join sounds.")
-        names = [discord.utils.get(ctx.guild.roles, id=r).name for r in roles if discord.utils.get(ctx.guild.roles, id=r)]
+        names = [
+            discord.utils.get(ctx.guild.roles, id=r).name
+            for r in roles if discord.utils.get(ctx.guild.roles, id=r)
+        ]
         await ctx.send("✅ Allowed join-sound roles: " + ", ".join(names))
 
     @commands.command()
@@ -69,7 +72,7 @@ class JoinSound(commands.Cog):
         os.makedirs(folder, exist_ok=True)
         local_path = os.path.join(folder, f"{ctx.author.id}.mp3")
 
-        # Clear old local file if exists
+        # Clear old local file
         if os.path.isfile(local_path):
             try:
                 os.remove(local_path)
@@ -121,7 +124,6 @@ class JoinSound(commands.Cog):
         if before.channel == after.channel or member.bot or after.channel is None:
             return
 
-        # Determine source: local file or URL
         folder = "data/joinsound/mp3s/"
         local_path = os.path.join(folder, f"{member.id}.mp3")
         url = await self.config.user(member).mp3_url()
@@ -133,7 +135,7 @@ class JoinSound(commands.Cog):
             print(f"🛑 No audio set for {member.display_name}.")
             return
 
-        guild_id = after.guild.id
+        guild_id = member.guild.id
         vc = self.voice_clients.get(guild_id)
         if not vc or not vc.is_connected():
             try:
@@ -145,12 +147,10 @@ class JoinSound(commands.Cog):
                 traceback.print_exc()
                 return
 
-        # Cancel pending disconnect
         task = self.disconnect_tasks.get(guild_id)
         if task:
             task.cancel()
 
-        # Play audio
         try:
             vc.play(discord.FFmpegPCMAudio(source))
             while vc.is_playing():
@@ -159,5 +159,4 @@ class JoinSound(commands.Cog):
             print(f"⚠️ Playback error for {member.display_name}: {e}")
             traceback.print_exc()
 
-        # Schedule idle disconnect
         self.disconnect_tasks[guild_id] = asyncio.create_task(self._idle_disconnect(guild_id))
