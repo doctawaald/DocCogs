@@ -84,10 +84,66 @@ class JoinSound(commands.Cog):
         - Provide a direct .mp3 URL as argument.
         - Or upload a .mp3 file as attachment if no URL provided.
         """
+        # existing logic...
         if not await self.bot.is_owner(ctx.author):
             allowed = await self.config.guild(ctx.guild).allowed_roles()
             if not any(r.id in allowed for r in ctx.author.roles):
                 return await ctx.send("❌ You don't have permission.")
+        folder = "data/joinsound/mp3s/"
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, f"{ctx.author.id}.mp3")
+        if os.path.isfile(path): os.remove(path)
+        await self.config.user(ctx.author).mp3_url.clear()
+        if url:
+            if not url.lower().endswith('.mp3'):
+                return await ctx.send("❌ URL must end with .mp3")
+            await self.config.user(ctx.author).mp3_url.set(url)
+            return await ctx.send(f"✅ Join sound URL set: {url}")
+        if not ctx.message.attachments:
+            return await ctx.send("📎 Provide a .mp3 URL or upload a .mp3 file.")
+        att = ctx.message.attachments[0]
+        if not att.filename.lower().endswith('.mp3'):
+            return await ctx.send("❌ Only .mp3 allowed.")
+        try:
+            await att.save(path)
+            await ctx.send("✅ Local join sound saved.")
+        except Exception as e:
+            await ctx.send(f"❌ Failed to save file: {e}")
+
+    @commands.command()
+    async def setjoinsoundfor(self, ctx, member: discord.Member, url: str = None):
+        """
+        Set join sound for another user (bot owner or allowed roles):
+        - Provide a user mention or ID and a direct .mp3 URL.
+        - Or upload a .mp3 file as attachment.
+        """
+        if not await self.bot.is_owner(ctx.author):
+            allowed = await self.config.guild(ctx.guild).allowed_roles()
+            if not any(r.id in allowed for r in ctx.author.roles):
+                return await ctx.send("❌ You don't have permission.")
+        folder = "data/joinsound/mp3s/"
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, f"{member.id}.mp3")
+        # clear existing
+        if os.path.isfile(path): os.remove(path)
+        await self.config.user(member).mp3_url.clear()
+        # URL mode
+        if url:
+            if not url.lower().endswith('.mp3'):
+                return await ctx.send("❌ URL must end with .mp3")
+            await self.config.user(member).mp3_url.set(url)
+            return await ctx.send(f"✅ Join sound for {member.display_name} set to URL: {url}")
+        # Attachment mode
+        if not ctx.message.attachments:
+            return await ctx.send("📎 Provide a .mp3 URL or upload a .mp3 file.")
+        att = ctx.message.attachments[0]
+        if not att.filename.lower().endswith('.mp3'):
+            return await ctx.send("❌ Only .mp3 allowed.")
+        try:
+            await att.save(path)
+            await ctx.send(f"✅ Local join sound saved for {member.display_name}.")
+        except Exception as e:
+            await ctx.send(f"❌ Failed to save file: {e}")("❌ You don't have permission.")
         folder = "data/joinsound/mp3s/"
         os.makedirs(folder, exist_ok=True)
         path = os.path.join(folder, f"{ctx.author.id}.mp3")
