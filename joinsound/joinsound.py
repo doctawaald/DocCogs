@@ -5,17 +5,14 @@ import asyncio
 import traceback
 
 class JoinSound(commands.Cog):
-    """Plays a sound when a user joins a voice channel (URL or upload), with role permissions and auto-disconnect."""
+    """Plays a sound when a user joins a voice channel (URL or upload), with role permissions, auto-disconnect,
+    and allows admins to set join sounds for any user."""
 
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=43219876)
         default_user = {"mp3_url": None}
-        default_guild = {
-            "allowed_roles": [],
-            "auto_disconnect": True,
-            "disconnect_delay": 30
-        }
+        default_guild = {"allowed_roles": [], "auto_disconnect": True, "disconnect_delay": 30}
         self.config.register_user(**default_user)
         self.config.register_guild(**default_guild)
         self.voice_clients = {}       # guild_id -> VoiceClient
@@ -80,43 +77,47 @@ class JoinSound(commands.Cog):
     @commands.command()
     async def joinsound(self, ctx, url: str = None):
         """
-        Set your join sound:
-        - Provide a direct .mp3 URL as argument.
-        - Or upload a .mp3 file as attachment if no URL provided.
+        Set your own join sound:
+        - Provide a direct .mp3 URL.
+        - Or upload a .mp3 attachment.
         """
-        # existing logic...
+        # Permission check
         if not await self.bot.is_owner(ctx.author):
             allowed = await self.config.guild(ctx.guild).allowed_roles()
             if not any(r.id in allowed for r in ctx.author.roles):
                 return await ctx.send("❌ You don't have permission.")
+        # Filepath for this user
         folder = "data/joinsound/mp3s/"
         os.makedirs(folder, exist_ok=True)
         path = os.path.join(folder, f"{ctx.author.id}.mp3")
+        # Clear old data
         if os.path.isfile(path): os.remove(path)
         await self.config.user(ctx.author).mp3_url.clear()
+        # URL mode
         if url:
             if not url.lower().endswith('.mp3'):
                 return await ctx.send("❌ URL must end with .mp3")
             await self.config.user(ctx.author).mp3_url.set(url)
-            return await ctx.send(f"✅ Join sound URL set: {url}")
+            return await ctx.send(f"✅ Your join sound URL set: {url}")
+        # Upload mode
         if not ctx.message.attachments:
-            return await ctx.send("📎 Provide a .mp3 URL or upload a .mp3 file.")
+            return await ctx.send("📎 Provide a .mp3 URL or upload file.")
         att = ctx.message.attachments[0]
         if not att.filename.lower().endswith('.mp3'):
             return await ctx.send("❌ Only .mp3 allowed.")
         try:
             await att.save(path)
-            await ctx.send("✅ Local join sound saved.")
+            await ctx.send("✅ Your local join sound saved.")
         except Exception as e:
-            await ctx.send(f"❌ Failed to save file: {e}")
+            return await ctx.send(f"❌ Failed to save file: {e}")
 
     @commands.command()
     async def setjoinsoundfor(self, ctx, member: discord.Member, url: str = None):
         """
         Set join sound for another user (bot owner or allowed roles):
-        - Provide a user mention or ID and a direct .mp3 URL.
-        - Or upload a .mp3 file as attachment.
+        - Mention a user and provide a .mp3 URL or upload attachment.
         """
+        # Permission check
         if not await self.bot.is_owner(ctx.author):
             allowed = await self.config.guild(ctx.guild).allowed_roles()
             if not any(r.id in allowed for r in ctx.author.roles):
@@ -124,7 +125,7 @@ class JoinSound(commands.Cog):
         folder = "data/joinsound/mp3s/"
         os.makedirs(folder, exist_ok=True)
         path = os.path.join(folder, f"{member.id}.mp3")
-        # clear existing
+        # Clear old data for target
         if os.path.isfile(path): os.remove(path)
         await self.config.user(member).mp3_url.clear()
         # URL mode
@@ -133,37 +134,17 @@ class JoinSound(commands.Cog):
                 return await ctx.send("❌ URL must end with .mp3")
             await self.config.user(member).mp3_url.set(url)
             return await ctx.send(f"✅ Join sound for {member.display_name} set to URL: {url}")
-        # Attachment mode
+        # Upload mode
         if not ctx.message.attachments:
-            return await ctx.send("📎 Provide a .mp3 URL or upload a .mp3 file.")
+            return await ctx.send("📎 Provide a .mp3 URL or upload file.")
         att = ctx.message.attachments[0]
         if not att.filename.lower().endswith('.mp3'):
             return await ctx.send("❌ Only .mp3 allowed.")
         try:
             await att.save(path)
-            await ctx.send(f"✅ Local join sound saved for {member.display_name}.")
+            return await ctx.send(f"✅ Local join sound saved for {member.display_name}.")
         except Exception as e:
-            await ctx.send(f"❌ Failed to save file: {e}")("❌ You don't have permission.")
-        folder = "data/joinsound/mp3s/"
-        os.makedirs(folder, exist_ok=True)
-        path = os.path.join(folder, f"{ctx.author.id}.mp3")
-        if os.path.isfile(path): os.remove(path)
-        await self.config.user(ctx.author).mp3_url.clear()
-        if url:
-            if not url.lower().endswith('.mp3'):
-                return await ctx.send("❌ URL must end with .mp3")
-            await self.config.user(ctx.author).mp3_url.set(url)
-            return await ctx.send(f"✅ Join sound URL set: {url}")
-        if not ctx.message.attachments:
-            return await ctx.send("📎 Provide a .mp3 URL or upload a .mp3 file.")
-        att = ctx.message.attachments[0]
-        if not att.filename.lower().endswith('.mp3'):
-            return await ctx.send("❌ Only .mp3 allowed.")
-        try:
-            await att.save(path)
-            await ctx.send("✅ Local join sound saved.")
-        except Exception as e:
-            await ctx.send(f"❌ Failed to save file: {e}")
+            return await ctx.send(f"❌ Failed to save file: {e}")
 
     @commands.command()
     async def cogtest(self, ctx):
@@ -172,70 +153,66 @@ class JoinSound(commands.Cog):
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
-        # If bot was disconnected externally, prevent auto-reconnect
+        # Skip self state updates
+        if before.channel == after.channel or member.bot:
+            return
+        # If bot left and no users, static cleanup
         if member.id == self.bot.user.id and before.channel and after.channel is None:
-            guild_id = before.channel.guild.id
-            vc = self.voice_clients.pop(guild_id, None)
+            gid = before.channel.guild.id
+            vc = self.voice_clients.pop(gid, None)
+            if vc and hasattr(vc, '_should_reconnect'):
+                vc._should_reconnect = False
             if vc:
-                if hasattr(vc, '_should_reconnect'):
-                    vc._should_reconnect = False
                 try:
                     await vc.disconnect()
                 except:
                     pass
-                task = self.disconnect_tasks.pop(guild_id, None)
+                task = self.disconnect_tasks.pop(gid, None)
                 if task:
                     task.cancel()
-            print(f"🔔 External disconnect for guild {guild_id}, will not reconnect until next user join.")
+            print(f"🔔 Bot disconnected in guild {gid}, will reconnect on next user join.")
             return
-
-        print(f"🔔 Voice update: {member} from {before.channel} to {after.channel}")
-        if before.channel == after.channel or member.bot or after.channel is None:
-            return
-
-        guild_id = after.channel.guild.id
-        # Determine audio source
-        url = await self.config.user(member).mp3_url()
-        folder = "data/joinsound/mp3s/"
-        path = os.path.join(folder, f"{member.id}.mp3")
-        source = url if not os.path.isfile(path) else path
-        if not source:
-            return
-
-        # Connect or move voice client
-        vc = self.voice_clients.get(guild_id)
-        try:
-            if vc is None or not vc.is_connected():
-                vc = await after.channel.connect(reconnect=False)
-                try:
-                    await vc.guild.me.edit(deafen=True)
-                except:
-                    pass
-                self.voice_clients[guild_id] = vc
-            elif vc.channel.id != after.channel.id:
-                await vc.move_to(after.channel)
-        except Exception as e:
-            print(f"⚠️ Connect error: {e}")
-            traceback.print_exc()
-            return
-
-        # Play the sound
-        try:
-            vc.play(discord.FFmpegPCMAudio(source))
-            while vc.is_playing():
-                await asyncio.sleep(0.1)
-        except Exception as e:
-            print(f"⚠️ Playback error: {e}")
-            traceback.print_exc()
-            return
-
-        # Schedule auto-disconnect
-        if await self.config.guild(after.channel.guild).auto_disconnect():
-            delay = await self.config.guild(after.channel.guild).disconnect_delay()
-            task = self.disconnect_tasks.get(guild_id)
-            if task:
-                task.cancel()
-            self.disconnect_tasks[guild_id] = asyncio.create_task(self._idle_disconnect(guild_id, delay))
+        # user join
+        if before.channel is None and after.channel:
+            folder = "data/joinsound/mp3s/"
+            path = os.path.join(folder, f"{member.id}.mp3")
+            url = await self.config.user(member).mp3_url()
+            source = url if not os.path.isfile(path) else path
+            if not source:
+                return
+            gid = after.channel.guild.id
+            # Voice connect
+            vc = self.voice_clients.get(gid)
+            try:
+                if vc is None or not vc.is_connected():
+                    vc = await after.channel.connect(reconnect=False)
+                    try:
+                        await vc.guild.me.edit(deafen=True)
+                    except:
+                        pass
+                    self.voice_clients[gid] = vc
+                elif vc.channel.id != after.channel.id:
+                    await vc.move_to(after.channel)
+            except Exception as e:
+                print(f"⚠️ Connect error: {e}")
+                traceback.print_exc()
+                return
+            # Play
+            try:
+                vc.play(discord.FFmpegPCMAudio(source))
+                while vc.is_playing():
+                    await asyncio.sleep(0.1)
+            except Exception as e:
+                print(f"⚠️ Playback error: {e}")
+                traceback.print_exc()
+                return
+            # Auto-disconnect
+            if await self.config.guild(after.channel.guild).auto_disconnect():
+                delay = await self.config.guild(after.channel.guild).disconnect_delay()
+                task = self.disconnect_tasks.get(gid)
+                if task:
+                    task.cancel()
+                self.disconnect_tasks[gid] = asyncio.create_task(self._idle_disconnect(gid, delay))
 
     async def _idle_disconnect(self, guild_id, delay):
         await asyncio.sleep(delay)
