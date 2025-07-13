@@ -1,4 +1,4 @@
 from .boozybank import BoozyBank
 
-def setup(bot):
-    bot.add_cog(BoozyBank(bot))
+async def setup(bot):
+    await bot.add_cog(BoozyBank(bot))
