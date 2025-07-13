@@ -138,6 +138,9 @@ class BoozyBank(commands.Cog):
     # QUIZ COMMAND
     @commands.command()
     async def boozyquiz(self, ctx, thema: str = "algemeen", moeilijkheid: str = "medium"):
+        """Start handmatig of automatisch een quiz."""
+        if self.quiz_active:
+            return await ctx.send("Even wachten, er is al een quiz bezig...")algemeen", moeilijkheid: str = "medium"):
         """Start handmatig of automatisch een quiz."
         if self.quiz_active:
             return await ctx.send("Even wachten, er is al een quiz bezig.")
