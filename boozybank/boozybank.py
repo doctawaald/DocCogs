@@ -127,8 +127,11 @@ class BoozyBank(commands.Cog):
         if not voice or not voice.channel:
             return await ctx.send("Je moet in een voicekanaal zitten met minstens 3 gebruikers!")
         members = [m for m in voice.channel.members if not m.bot]
-        if len(members) < 1:
-            return await ctx.send("Minstens 3 gebruikers in voice vereist voor de quiz!")
+        if len(members) < 3:
+            if len(members) == 1 or ctx.author.id == 489127123446005780:
+                await ctx.send("🔧 Testmodus: quiz wordt gestart, maar zonder reward.")
+            else:
+                return await ctx.send("Minstens 3 gebruikers in voice vereist voor de quiz!")
 
         await self.start_quiz(ctx.channel, members, thema, moeilijkheid)
 
@@ -152,7 +155,7 @@ class BoozyBank(commands.Cog):
 
             try:
                 msg = await self.bot.wait_for("message", check=check, timeout=30.0)
-                reward = {"easy": 5, "medium": 10, "hard": 20}.get(moeilijkheid, 10)
+                reward = {"easy": 5, "medium": 10, "hard": 20}.get(moeilijkheid, 10) if any(p.id != 489127123446005780 for p in players) else 0
                 await self.config.user(msg.author).booz.set(
                     (await self.config.user(msg.author).booz()) + reward
                 )
