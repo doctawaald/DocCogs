@@ -161,17 +161,21 @@ class BoozyBank(commands.Cog):
             self.quiz_active = False
 
     async def generate_quiz(self, thema, moeilijkheid):
-        prompt = f"""
-Je bent BoozyBoi, een dronken quizmaster. Stel één quizvraag over het onderwerp '{thema}' met moeilijkheid '{moeilijkheid}'. Geef enkel het antwoord apart op de tweede regel.
-Voorbeeld:
-Vraag: Wat zit er in een mojito?
-Antwoord: munt
-"""
+        prompt = (
+            f"Je bent BoozyBoi, een dronken quizmaster. Stel één quizvraag over het onderwerp '",
+            f"{thema}' met moeilijkheid '{moeilijkheid}'. Geef enkel het antwoord apart op de tweede regel.
+"
+            "Voorbeeld:
+"
+            "Vraag: Wat zit er in een mojito?
+"
+            "Antwoord: munt"
+        )
         async with aiohttp.ClientSession() as session:
             headers = {"Authorization": f"Bearer {self.api_key}"}
             json_data = {
                 "model": "gpt-4o",
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": [{"role": "user", "content": ''.join(prompt)}],
                 "temperature": 0.7
             }
             async with session.post("https://api.openai.com/v1/chat/completions", headers=headers, json=json_data) as resp:
