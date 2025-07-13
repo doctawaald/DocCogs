@@ -5,11 +5,12 @@
 import discord
 from redbot.core import commands, Config, checks
 from difflib import SequenceMatcher
-from random import randint
+from random import randint, choice
 import datetime
 import asyncio
 import aiohttp
 import re
+import json
 
 
 def is_correct(user_input, correct_answer):
@@ -42,6 +43,7 @@ class BoozyBank(commands.Cog):
         self.voice_check_task = self.bot.loop.create_task(self.voice_reward_loop())
         self.quiz_active = False
         self.api_key = None
+        self.thema_pool = ["games", "alcohol", "films", "board games", "algemeen"]
 
     def cog_unload(self):
         self.voice_check_task.cancel()
@@ -83,8 +85,9 @@ class BoozyBank(commands.Cog):
                             quiz_chan = guild.get_channel(quiz_chan_id)
                             if (not last_quiz or last_quiz < reset_time):
                                 await self.config.guild(guild).last_quiz.set(now.timestamp())
+                                thema = choice(self.thema_pool)
                                 ctx = await self.bot.get_context(await quiz_chan.send("🎲 Tijd voor een BoozyQuiz!"))
-                                await self.boozyquiz(ctx, auto=True)
+                                await self.boozyquiz(ctx, thema=thema, auto=True)
 
                 except Exception as e:
                     print(f"[BoozyBank VC loop error] {e}")
@@ -98,7 +101,7 @@ class BoozyBank(commands.Cog):
 
     async def fetch_question(self, thema, moeilijkheid):
         async with aiohttp.ClientSession() as session:
-            prompt = f"Geef me een quizvraag over het thema '{thema}' met moeilijkheid '{moeilijkheid}'. Geef enkel de vraag op de eerste regel en het antwoord op de tweede."
+            prompt = f"Geef een multiplechoice quizvraag over '{thema}' met moeilijkheid '{moeilijkheid}'. Geef het als JSON met de velden: 'question', 'options' (lijst van 4 strings), en 'answer' (de juiste optie A/B/C/D)."
             headers = {"Authorization": f"Bearer {self.api_key}"}
             json_data = {
                 "model": "gpt-4o-mini",
@@ -108,15 +111,14 @@ class BoozyBank(commands.Cog):
             }
             async with session.post("https://api.openai.com/v1/chat/completions", headers=headers, json=json_data) as resp:
                 data = await resp.json()
-                content = data["choices"][0]["message"]["content"]
-                match = re.findall(r"Vraag:(.*?)\\nAntwoord:(.*)", content, re.DOTALL)
-                if match:
-                    vraag, antwoord = match[0]
-                else:
-                    parts = content.split("\n")
-                    vraag = parts[0] if parts else "Wat is 1+1?"
-                    antwoord = parts[1] if len(parts) > 1 else "2"
-                return vraag.strip(), antwoord.strip()
+                try:
+                    content = data["choices"][0]["message"]["content"]
+                    parsed = re.search(r'{.*}', content, re.DOTALL)
+                    if parsed:
+                        parsed_json = json.loads(parsed.group())
+                        return parsed_json["question"], parsed_json["options"], parsed_json["answer"]
+                except Exception:
+                    return "Wat is 1+1?", ["1", "2", "3", "4"], "B"
 
     @commands.command()
     async def boozyquiz(self, ctx, thema: str = "algemeen", moeilijkheid: str = "medium", auto: bool = False):
@@ -144,82 +146,54 @@ class BoozyBank(commands.Cog):
         self.quiz_active = True
         try:
             async with ctx.channel.typing():
-                vraag, antwoord = await self.fetch_question(thema, moeilijkheid)
+                vraag, opties, correct = await self.fetch_question(thema, moeilijkheid)
 
-            await ctx.send(f"❓**{vraag}** (15s)\n*Antwoord in de chat!*")
+            letters = ["A", "B", "C", "D"]
+            opties_str = "\n".join([f"{letters[i]}. {opties[i]}" for i in range(4)])
+            await ctx.send(f"❓**{vraag}** (antwoord met A/B/C/D - 15s)\n{opties_str}")
 
             def antwoord_check(m):
-                return m.channel == ctx.channel and not m.author.bot
+                return m.channel == ctx.channel and not m.author.bot and m.content.upper() in letters
 
             try:
                 msg = await self.bot.wait_for("message", check=antwoord_check, timeout=15.0)
-                if is_correct(msg.content, antwoord):
+                if msg.content.upper() == correct.upper():
                     await ctx.send(f"✅ Correct, {msg.author.mention}! Dat verdient 5 Boo'z.")
                     saldo = await self.config.user(msg.author).booz()
                     await self.config.user(msg.author).booz.set(saldo + 5)
                 else:
-                    await ctx.send(f"❌ Nope. Het juiste antwoord was: **{antwoord}**")
+                    await ctx.send(f"❌ Nope. Het juiste antwoord was **{correct.upper()}**: {opties[letters.index(correct.upper())]}")
             except asyncio.TimeoutError:
-                await ctx.send(f"⌛ Niemand heeft geantwoord. Het juiste antwoord was: **{antwoord}**")
+                await ctx.send(f"⌛ Niemand heeft geantwoord. Het juiste antwoord was **{correct.upper()}**: {opties[letters.index(correct.upper())]}")
         finally:
             self.quiz_active = False
 
     @commands.command()
-    async def booz(self, ctx):
-        """Bekijk je saldo."""
+    async def bal(self, ctx):
+        """Bekijk je Boo'z saldo."""
         saldo = await self.config.user(ctx.author).booz()
-        await ctx.send(f"💰 {ctx.author.display_name}, je hebt **{saldo} Boo'z**.")
+        await ctx.send(f"💰 {ctx.author.mention}, je hebt {saldo} Boo'z.")
 
     @commands.command()
-    async def shop(self, ctx):
-        """Toon beschikbare items in de shop."""
-        shop = await self.config.guild(ctx.guild).shop()
-        desc = "\n".join([f"**{item}** - {info['price']} Boo'z" for item, info in shop.items()])
-        await ctx.send(f"🛒 **Shop:**\n{desc}")
-
-    @commands.command()
-    async def redeem(self, ctx, item: str):
-        """Koop iets uit de shop."""
-        shop = await self.config.guild(ctx.guild).shop()
-        item = item.lower()
-        if item not in shop:
-            return await ctx.send("❌ Item niet gevonden in de shop.")
-
-        price = shop[item]["price"]
-        saldo = await self.config.user(ctx.author).booz()
-        if saldo < price:
-            return await ctx.send("❌ Je hebt niet genoeg Boo'z.")
-
-        await self.config.user(ctx.author).booz.set(saldo - price)
-        await ctx.send(f"✅ Je hebt **{item}** gekocht voor {price} Boo'z!")
-
-    @commands.command()
-    @commands.has_permissions(manage_guild=True)
     async def setquizchannel(self, ctx):
-        """Stel het huidige kanaal in als quizkanaal."""
+        """Stel dit kanaal in als quizkanaal."""
         await self.config.guild(ctx.guild).quiz_channel.set(ctx.channel.id)
-        await ctx.send(f"✅ Quizkanaal ingesteld op {ctx.channel.mention}.")
+        await ctx.send("✅ Quizkanaal ingesteld.")
 
     @commands.command()
-    @commands.has_permissions(manage_channels=True)
     async def excludechannel(self, ctx):
-        """Sluit dit kanaal uit van rewards."""
-        current = await self.config.guild(ctx.guild).excluded_channels()
-        if ctx.channel.id not in current:
-            current.append(ctx.channel.id)
-            await self.config.guild(ctx.guild).excluded_channels.set(current)
-            await ctx.send("🚫 Dit kanaal wordt nu genegeerd voor rewards.")
-        else:
-            await ctx.send("⚠️ Dit kanaal stond al op de uitsluitlijst.")
+        """Sluit dit kanaal uit van beloningen."""
+        excluded = await self.config.guild(ctx.guild).excluded_channels()
+        if ctx.channel.id not in excluded:
+            excluded.append(ctx.channel.id)
+            await self.config.guild(ctx.guild).excluded_channels.set(excluded)
+            await ctx.send("❌ Dit kanaal is nu uitgesloten van beloningen.")
 
     @commands.command()
-    @commands.has_permissions(manage_channels=True)
     async def includechannel(self, ctx):
-        """Verwijder dit kanaal uit de uitsluitlijst."""
-        current = await self.config.guild(ctx.guild).excluded_channels()
-        if ctx.channel.id in current:
-            current.remove(ctx.channel.id)
-            await self.config.guild(ctx.guild).excluded_channels.set(current)
-            await ctx.send("✅ Dit kanaal doet weer mee met rewards.")
-        else:
-            await ctx.send("ℹ️ Dit kanaal stond niet op de uitsluitlijst.")
+        """Sta dit kanaal opnieuw toe voor beloningen."""
+        excluded = await self.config.guild(ctx.guild).excluded_channels()
+        if ctx.channel.id in excluded:
+            excluded.remove(ctx.channel.id)
+            await self.config.guild(ctx.guild).excluded_channels.set(excluded)
+            await ctx.send("✅ Dit kanaal is opnieuw toegestaan voor beloningen.")
