@@ -137,39 +137,41 @@ class BoozyBank(commands.Cog):
 
     async def start_quiz(self, channel, players, thema, moeilijkheid):
         self.quiz_active = True
-        await channel.typing().__aenter__()
+        recent_questions = getattr(self, "_recent_questions", [])
+        for _ in range(5):
+            vraag, antwoord = await self.generate_quiz(thema, moeilijkheid)
+            if vraag not in recent_questions:
+                break
+        recent_questions.append(vraag)
+        if len(recent_questions) > 10:
+            recent_questions.pop(0)
+        self._recent_questions = recent_questions
+
+        async with channel.typing():
+            await asyncio.sleep(1.5)
+
+        await channel.send(f"🤔 BoozyBoi denkt na over *{thema}*...")
+        await asyncio.sleep(1.5)
+        await channel.send(f"🎮 **BoozyQuiz™ Tijd!** Thema: *{thema}* | Moeilijkheid: *{moeilijkheid}*\n**Vraag:** {vraag}")
+
+        def check(m):
+            return (
+                m.channel == channel
+                and m.author in players
+                and not m.author.bot
+                and is_correct(m.content, antwoord)
+            )
+
         try:
-            recent_questions = getattr(self, "_recent_questions", [])
-            for _ in range(5):
-                vraag, antwoord = await self.generate_quiz(thema, moeilijkheid)
-                if vraag not in recent_questions:
-                    break
-            recent_questions.append(vraag)
-            if len(recent_questions) > 10:
-                recent_questions.pop(0)
-            self._recent_questions = recent_questions
-
-            await channel.send(f"🎮 **BoozyQuiz™ Tijd!** Thema: *{thema}* | Moeilijkheid: *{moeilijkheid}*\n**Vraag:** {vraag}")
-
-            def check(m):
-                return (
-                    m.channel == channel
-                    and m.author in players
-                    and not m.author.bot
-                    and is_correct(m.content, antwoord)
-                )
-
-            try:
-                msg = await self.bot.wait_for("message", check=check, timeout=30.0)
-                reward = {"easy": 5, "medium": 10, "hard": 20}.get(moeilijkheid, 10) if any(p.id != 489127123446005780 for p in players) else 0
-                await self.config.user(msg.author).booz.set(
-                    (await self.config.user(msg.author).booz()) + reward
-                )
-                await channel.send(f"🎉 Correct, {msg.author.mention}! Je wint **{reward} Boo'z**.")
-            except asyncio.TimeoutError:
-                await channel.send("🧦 Niemand wist het... volgende keer beter.")
+            msg = await self.bot.wait_for("message", check=check, timeout=30.0)
+            reward = {"easy": 5, "medium": 10, "hard": 20}.get(moeilijkheid, 10) if any(p.id != 489127123446005780 for p in players) else 0
+            await self.config.user(msg.author).booz.set(
+                (await self.config.user(msg.author).booz()) + reward
+            )
+            await channel.send(f"🎉 Correct, {msg.author.mention}! Je wint **{reward} Boo'z**.")
+        except asyncio.TimeoutError:
+            await channel.send(f"🤦 Niemand wist het... volgende keer beter. Het juiste antwoord was: **{antwoord}**")
         finally:
-            await channel.typing().__aexit__(None, None, None)
             self.quiz_active = False
 
     async def generate_quiz(self, thema, moeilijkheid):
