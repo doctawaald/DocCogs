@@ -136,16 +136,19 @@ class BoozyBank(commands.Cog):
         await self.start_quiz(ctx.channel, members, thema, moeilijkheid)
 
     async def start_quiz(self, channel, players, thema, moeilijkheid):
-        # Already handled above
-        for _ in range(5):
-            vraag, antwoord = await self.generate_quiz(thema, moeilijkheid)
-            if vraag not in recent_questions:
-                break
-        recent_questions.append(vraag)
-        if len(recent_questions) > 10:
-            recent_questions.pop(0)
-        self._recent_questions = recent_questions
-                        await typing.__aexit__(None, None, None)
+        self.quiz_active = True
+        await channel.typing().__aenter__()
+        try:
+            recent_questions = getattr(self, "_recent_questions", [])
+            for _ in range(5):
+                vraag, antwoord = await self.generate_quiz(thema, moeilijkheid)
+                if vraag not in recent_questions:
+                    break
+            recent_questions.append(vraag)
+            if len(recent_questions) > 10:
+                recent_questions.pop(0)
+            self._recent_questions = recent_questions
+
             await channel.send(f"🎮 **BoozyQuiz™ Tijd!** Thema: *{thema}* | Moeilijkheid: *{moeilijkheid}*\n**Vraag:** {vraag}")
 
             def check(m):
@@ -164,9 +167,9 @@ class BoozyBank(commands.Cog):
                 )
                 await channel.send(f"🎉 Correct, {msg.author.mention}! Je wint **{reward} Boo'z**.")
             except asyncio.TimeoutError:
-                await channel.send("🤦 Niemand wist het... volgende keer beter.")
+                await channel.send("🧦 Niemand wist het... volgende keer beter.")
         finally:
-                        await typing.__aexit__(None, None, None)
+            await channel.typing().__aexit__(None, None, None)
             self.quiz_active = False
 
     async def generate_quiz(self, thema, moeilijkheid):
