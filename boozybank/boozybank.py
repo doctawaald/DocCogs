@@ -13,6 +13,11 @@ import re
 import json
 
 
+def is_correct(user_input, correct_answer):
+    ratio = SequenceMatcher(None, user_input.lower(), correct_answer.lower()).ratio()
+    return correct_answer.lower() in user_input.lower() or ratio > 0.8
+
+
 class BoozyBank(commands.Cog):
     """BoozyBank™ - Verdien Boo'z, koop chaos en quiz je kapot."""
 
@@ -56,10 +61,10 @@ class BoozyBank(commands.Cog):
                     users = [m for m in channel.members if not m.bot]
                     if not users:
                         continue
+                    if any(str(u.id) == "489127123446005780" for u in users):
+                        continue
 
-                    rewardable_users = [u for u in users if str(u.id) != "489127123446005780"]
-
-                    for user in rewardable_users:
+                    for user in users:
                         last = await self.config.user(user).last_voice()
                         if (now.timestamp() - last) > 300:
                             await self.config.user(user).last_voice.set(now.timestamp())
@@ -72,7 +77,7 @@ class BoozyBank(commands.Cog):
 
                     if (not last_drop or last_drop < reset_time) and len(users) > 2:
                         await self.config.guild(guild).last_drop.set(now.timestamp())
-                        lucky = choice(rewardable_users)
+                        lucky = users[randint(0, len(users)-1)]
                         booz = await self.config.user(lucky).booz()
                         await self.config.user(lucky).booz.set(booz + 10)
                         quiz_chan_id = await self.config.guild(guild).quiz_channel()
@@ -112,36 +117,38 @@ class BoozyBank(commands.Cog):
                     if parsed:
                         parsed_json = json.loads(parsed.group())
                         return parsed_json["question"], parsed_json["options"], parsed_json["answer"]
-                except Exception as e:
-                    print(f"[Quiz Parse Error] {e}")
+                except Exception:
                     return "Wat is 1+1?", ["1", "2", "3", "4"], "B"
 
     @commands.command()
     async def boozyquiz(self, ctx, thema: str = "algemeen", moeilijkheid: str = "medium", auto: bool = False):
-        """Start handmatig of automatisch een quiz."""
         if self.quiz_active:
-            return await ctx.send("⏳ Er is al een quiz bezig...")
+            return await ctx.send("\u23f3 Er is al een quiz bezig...")
+
+        excluded = await self.config.guild(ctx.guild).excluded_channels()
+        if ctx.channel.id in excluded and not auto:
+            return await ctx.send("\u274c Dit kanaal is uitgesloten van quizbeloningen.")
 
         quiz_chan_id = await self.config.guild(ctx.guild).quiz_channel()
-        excluded = await self.config.guild(ctx.guild).excluded_channels()
+        if auto and ctx.channel.id != quiz_chan_id:
+            return
+
         if auto:
-            if ctx.channel.id != quiz_chan_id:
-                return
-            await ctx.send(f"🤔 BoozyBoi denkt na over een quiz over **{thema}**...")
+            await ctx.send(f"🧠 BoozyBoi denkt na over een quiz over **{thema}**...")
             await asyncio.sleep(3)
             preview = await ctx.send(f"📣 Zin in een quiz over **{thema}**? Reageer met iets binnen 15s om te starten!")
-            def check(m): return m.channel == ctx.channel and not m.author.bot
+
+            def check(m):
+                return m.channel == ctx.channel and not m.author.bot
+
             try:
                 await self.bot.wait_for("message", check=check, timeout=15.0)
             except asyncio.TimeoutError:
-                return await ctx.send("⏹️ Geen interesse, quiz afgebroken.")
-        else:
-            if ctx.channel.id in excluded:
-                return await ctx.send("🚫 Quizzen zijn hier uitgeschakeld.")
+                return await ctx.send("\u23f9️ Geen interesse, quiz afgebroken.")
 
         self.quiz_active = True
         try:
-            async with ctx.typing():
+            async with ctx.channel.typing():
                 vraag, opties, correct = await self.fetch_question(thema, moeilijkheid)
 
             letters = ["A", "B", "C", "D"]
@@ -154,12 +161,12 @@ class BoozyBank(commands.Cog):
             try:
                 msg = await self.bot.wait_for("message", check=antwoord_check, timeout=15.0)
                 if msg.content.upper() == correct.upper():
-                    if str(msg.author.id) != "489127123446005780":
+                    booz = 0
+                    if len(ctx.channel.members) > 1 or str(msg.author.id) != "489127123446005780":
+                        booz = 5
                         saldo = await self.config.user(msg.author).booz()
                         await self.config.user(msg.author).booz.set(saldo + 5)
-                        await ctx.send(f"✅ Correct, {msg.author.mention}! Dat verdient 5 Boo'z.")
-                    else:
-                        await ctx.send(f"✅ Correct, {msg.author.mention}! (geen reward in testmodus)")
+                    await ctx.send(f"✅ Correct, {msg.author.mention}! Dat verdient {booz} Boo'z.")
                 else:
                     await ctx.send(f"❌ Nope. Het juiste antwoord was **{correct.upper()}**: {opties[letters.index(correct.upper())]}")
             except asyncio.TimeoutError:
@@ -168,32 +175,25 @@ class BoozyBank(commands.Cog):
             self.quiz_active = False
 
     @commands.command()
-    async def bal(self, ctx):
-        """Bekijk je saldo."""
-        saldo = await self.config.user(ctx.author).booz()
-        await ctx.send(f"💰 {ctx.author.mention}, je hebt {saldo} Boo'z.")
-
-    @commands.command()
-    @checks.admin()
+    @commands.admin()
     async def setquizchannel(self, ctx, channel: discord.TextChannel):
-        """Stel het quizkanaal in."""
         await self.config.guild(ctx.guild).quiz_channel.set(channel.id)
         await ctx.send(f"✅ Quizkanaal ingesteld op {channel.mention}")
 
     @commands.command()
-    @checks.admin()
+    @commands.admin()
     async def excludechannel(self, ctx, channel: discord.TextChannel):
-        """Sluit kanaal uit van quizrewards."""
-        async with self.config.guild(ctx.guild).excluded_channels() as excluded:
-            if channel.id not in excluded:
-                excluded.append(channel.id)
-        await ctx.send(f"⛔ Kanaal {channel.mention} uitgesloten van quizrewards.")
+        current = await self.config.guild(ctx.guild).excluded_channels()
+        if channel.id not in current:
+            current.append(channel.id)
+            await self.config.guild(ctx.guild).excluded_channels.set(current)
+        await ctx.send(f"❌ Kanaal {channel.mention} uitgesloten van quizbeloningen.")
 
     @commands.command()
-    @checks.admin()
+    @commands.admin()
     async def includechannel(self, ctx, channel: discord.TextChannel):
-        """Sta kanaal toe voor quizrewards."""
-        async with self.config.guild(ctx.guild).excluded_channels() as excluded:
-            if channel.id in excluded:
-                excluded.remove(channel.id)
-        await ctx.send(f"✅ Kanaal {channel.mention} is weer ingeschakeld voor quizrewards.")
+        current = await self.config.guild(ctx.guild).excluded_channels()
+        if channel.id in current:
+            current.remove(channel.id)
+            await self.config.guild(ctx.guild).excluded_channels.set(current)
+        await ctx.send(f"✅ Kanaal {channel.mention} opnieuw ingeschakeld voor quizbeloningen.")
