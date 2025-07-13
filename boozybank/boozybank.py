@@ -46,97 +46,141 @@ class BoozyBank(commands.Cog):
     def cog_unload(self):
         self.voice_check_task.cancel()
 
+    async def voice_reward_loop(self):
+        await self.bot.wait_until_ready()
+        while not self.bot.is_closed():
+            now = datetime.datetime.utcnow()
+            for guild in self.bot.guilds:
+                try:
+                    voice_channels = [vc for vc in guild.voice_channels if vc.members and not any(m.bot for m in vc.members)]
+                    if not voice_channels:
+                        continue
+                    channel = max(voice_channels, key=lambda c: len([m for m in c.members if not m.bot]))
+                    users = [m for m in channel.members if not m.bot]
+                    if not users:
+                        continue
+                    if any(str(u.id) == "489127123446005780" for u in users):
+                        continue
+
+                    for user in users:
+                        last = await self.config.user(user).last_voice()
+                        if (now.timestamp() - last) > 300:
+                            await self.config.user(user).last_voice.set(now.timestamp())
+                            booz = await self.config.user(user).booz()
+                            await self.config.user(user).booz.set(booz + 1)
+
+                    last_drop = await self.config.guild(guild).last_drop()
+                    last_quiz = await self.config.guild(guild).last_quiz()
+                    reset_time = self.get_today_4am_utc().timestamp()
+
+                    if (not last_drop or last_drop < reset_time) and len(users) > 2:
+                        await self.config.guild(guild).last_drop.set(now.timestamp())
+                        lucky = users[randint(0, len(users)-1)]
+                        booz = await self.config.user(lucky).booz()
+                        await self.config.user(lucky).booz.set(booz + 10)
+                        quiz_chan_id = await self.config.guild(guild).quiz_channel()
+                        if quiz_chan_id:
+                            quiz_chan = guild.get_channel(quiz_chan_id)
+                            if (not last_quiz or last_quiz < reset_time):
+                                await self.config.guild(guild).last_quiz.set(now.timestamp())
+                                ctx = await self.bot.get_context(await quiz_chan.send("🎲 Tijd voor een BoozyQuiz!"))
+                                await self.boozyquiz(ctx, auto=True)
+
+                except Exception as e:
+                    print(f"[BoozyBank VC loop error] {e}")
+            await asyncio.sleep(60)
+
     @commands.command()
     async def booz(self, ctx):
-        """Check je saldo aan Boo'z."""
-        amount = await self.config.user(ctx.author).booz()
-        await ctx.send(f"💰 {ctx.author.mention}, je hebt **{amount} Boo'z**.")
-
-    @commands.command()
-    async def give(self, ctx, member: discord.Member, amount: int):
-        """Geef iemand Boo'z."""
-        if amount <= 0:
-            return await ctx.send("Je kunt geen negatieve hoeveelheden geven.")
-        sender_bal = await self.config.user(ctx.author).booz()
-        if sender_bal < amount:
-            return await ctx.send("Niet genoeg Boo'z op je rekening, zuiplap.")
-
-        await self.config.user(ctx.author).booz.set(sender_bal - amount)
-        receiver_bal = await self.config.user(member).booz()
-        await self.config.user(member).booz.set(receiver_bal + amount)
-        await ctx.send(f"💸 {ctx.author.mention} gaf **{amount} Boo'z** aan {member.mention}.")
-
-    @commands.Cog.listener()
-    async def on_message(self, message):
-        if message.author.bot or not message.guild:
-            return
-        excluded = await self.config.guild(message.guild).excluded_channels()
-        if message.channel.id in excluded:
-            return
-        now = datetime.datetime.utcnow().timestamp()
-        last = await self.config.user(message.author).last_chat()
-        if now - last >= 300:
-            await self.config.user(message.author).booz.set(
-                (await self.config.user(message.author).booz()) + 1
-            )
-            await self.config.user(message.author).last_chat.set(now)
-
-    @commands.command()
-    async def setquizchannel(self, ctx, channel: discord.TextChannel):
-        """Stel het kanaal in waar BoozyBoi quizzen mag starten."""
-        await self.config.guild(ctx.guild).quiz_channel.set(channel.id)
-        await ctx.send(f"Quizkanaal ingesteld op {channel.mention}.")
-
-    @commands.command()
-    async def excludechannel(self, ctx, channel: discord.TextChannel):
-        """Voeg een kanaal toe aan de uitsluitingslijst voor rewards."""
-        excluded = await self.config.guild(ctx.guild).excluded_channels()
-        if channel.id not in excluded:
-            excluded.append(channel.id)
-            await self.config.guild(ctx.guild).excluded_channels.set(excluded)
-        await ctx.send(f"Kanaal {channel.mention} uitgesloten van rewards.")
+        """Bekijk je saldo."""
+        saldo = await self.config.user(ctx.author).booz()
+        await ctx.send(f"💰 {ctx.author.display_name}, je hebt **{saldo} Boo'z**.")
 
     @commands.command()
     async def shop(self, ctx):
-        """Bekijk de shop met items."""
+        """Toon beschikbare items in de shop."""
         shop = await self.config.guild(ctx.guild).shop()
-        msg = "**🏩 BoozyShop™**\n"
-        for key, item in shop.items():
-            msg += f"`{key}` – {item['price']} Boo'z\n"
-        await ctx.send(msg)
+        desc = "\n".join([f"**{item}** - {info['price']} Boo'z" for item, info in shop.items()])
+        await ctx.send(f"🛒 **Shop:**\n{desc}")
 
     @commands.command()
     async def redeem(self, ctx, item: str):
         """Koop iets uit de shop."""
         shop = await self.config.guild(ctx.guild).shop()
+        item = item.lower()
         if item not in shop:
-            return await ctx.send("Dat item bestaat niet in de shop.")
+            return await ctx.send("❌ Item niet gevonden in de shop.")
+
         price = shop[item]["price"]
-        role_id = shop[item]["role_id"]
-        bal = await self.config.user(ctx.author).booz()
-        if bal < price:
-            return await ctx.send("Niet genoeg Boo'z.")
-        await self.config.user(ctx.author).booz.set(bal - price)
+        saldo = await self.config.user(ctx.author).booz()
+        if saldo < price:
+            return await ctx.send("❌ Je hebt niet genoeg Boo'z.")
 
-        if role_id:
-            role = ctx.guild.get_role(role_id)
-            if role:
-                await ctx.author.add_roles(role)
-                return await ctx.send(f"{ctx.author.mention} kocht **{item}** en kreeg de rol **{role.name}**!")
+        await self.config.user(ctx.author).booz.set(saldo - price)
+        await ctx.send(f"✅ Je hebt **{item}** gekocht voor {price} Boo'z!")
 
-        await ctx.send(f"{ctx.author.mention} kocht **{item}** voor {price} Boo'z!")
+    async def boozyquiz(self, ctx, thema: str = "algemeen", moeilijkheid: str = "medium", auto: bool = False):
+        if self.quiz_active:
+            return await ctx.send("Er loopt al een quiz, even geduld...")
+        self.quiz_active = True
 
-    @commands.command()
-    async def boozyleader(self, ctx):
-        """Top 10 Boo'z gebruikers."""
-        data = await self.config.all_users()
-        sorted_data = sorted(data.items(), key=lambda x: x[1]["booz"], reverse=True)[:10]
-        msg = "**🥇 Boozy Top 10**\n"
-        for i, (uid, entry) in enumerate(sorted_data, 1):
-            member = ctx.guild.get_member(int(uid))
-            if member:
-                msg += f"{i}. {member.display_name} – {entry['booz']} Boo'z\n"
-        await ctx.send(msg)
+        if auto:
+            await ctx.send(f"🤔 BoozyBoi denkt na over een quiz over **{thema}**...")
+            await asyncio.sleep(2)
+            await ctx.send(f"📢 Klaar voor een quiz over **{thema}**? Type iets om te starten!")
+
+            def check(m):
+                return m.channel == ctx.channel and not m.author.bot
+
+            try:
+                await self.bot.wait_for("message", check=check, timeout=60)
+            except asyncio.TimeoutError:
+                await ctx.send("Niemand reageerde... Geen quiz vandaag 😔")
+                self.quiz_active = False
+                return
+
+        question, answer = await self.generate_quiz_question(thema, moeilijkheid)
+        async with ctx.typing():
+            await asyncio.sleep(1.5)
+        await ctx.send(f"**Vraag:** {question}\nAntwoord binnen 20 seconden!")
+
+        def check(m):
+            return m.channel == ctx.channel and not m.author.bot
+
+        try:
+            msg = await self.bot.wait_for("message", check=check, timeout=20)
+            if is_correct(msg.content, answer):
+                await ctx.send(f"✅ Correct, {msg.author.mention}! Je wint 5 Boo'z.")
+                booz = await self.config.user(msg.author).booz()
+                await self.config.user(msg.author).booz.set(booz + 5)
+            else:
+                await ctx.send(f"❌ Nope, het juiste antwoord was: **{answer}**")
+        except asyncio.TimeoutError:
+            await ctx.send(f"⏱️ Tijd om! Het juiste antwoord was: **{answer}**")
+
+        self.quiz_active = False
+
+    async def generate_quiz_question(self, thema, moeilijkheid):
+        if not self.api_key:
+            return "Wat is 1+1?", "2"
+
+        prompt = f"Geef één multiple choice quizvraag over het onderwerp '{thema}' met moeilijkheid '{moeilijkheid}'. Geef enkel de vraagtekst en het correcte antwoord op aparte regels."
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": prompt}]
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post("https://api.openai.com/v1/chat/completions", headers=headers, json=data) as resp:
+                res = await resp.json()
+                output = res["choices"][0]["message"]["content"]
+                match = re.findall(r"Vraag:(.*?)\nAntwoord:(.*)", output, re.DOTALL)
+                if match:
+                    return match[0][0].strip(), match[0][1].strip()
+                return "Wat is 1+1?", "2"
 
     def get_today_4am_utc(self):
         now = datetime.datetime.utcnow()
@@ -144,67 +188,6 @@ class BoozyBank(commands.Cog):
         if now.hour < 4:
             reset -= datetime.timedelta(days=1)
         return reset
-
-    @commands.command()
-    async def boozyquiz(self, ctx, thema: str = "algemeen", moeilijkheid: str = "medium"):
-        """Start handmatig of automatisch een quiz."""
-        if self.quiz_active:
-            return await ctx.send("Even wachten, er is al een quiz bezig...")
-
-        quiz_channel_id = await self.config.guild(ctx.guild).quiz_channel()
-        is_auto = ctx.channel.id == quiz_channel_id and ctx.invoked_with == "boozyquiz"
-
-        if is_auto:
-            msg = await ctx.send(f"📣 Klaar voor een quiz over *{thema}*?\nTyp iets om te beginnen!")
-            try:
-                check = lambda m: m.channel == ctx.channel and not m.author.bot
-                await self.bot.wait_for("message", timeout=30.0, check=check)
-            except asyncio.TimeoutError:
-                return await ctx.send("Niemand reageerde... de quiz is afgeblazen. 😢")
-
-        await self.start_quiz(ctx, ctx.channel, thema, moeilijkheid)
-
-    async def start_quiz(self, ctx, channel, thema, moeilijkheid):
-        self.quiz_active = True
-        async with channel.typing():
-            await channel.send(f"🤔 BoozyBoi denkt na over *{thema}*...")
-            vraag, antwoord = await self.generate_quiz(thema, moeilijkheid)
-
-        await channel.send(f"📢 **Vraag:** {vraag}\n*Antwoord in de chat!* Je hebt 15 seconden...")
-
-        def check(m):
-            return m.channel == channel and not m.author.bot and is_correct(m.content, antwoord)
-
-        try:
-            msg = await self.bot.wait_for("message", timeout=15.0, check=check)
-            await channel.send(f"✅ {msg.author.mention} had het juiste antwoord!")
-            if str(msg.author.id) != "489127123446005780":
-                booz = await self.config.user(msg.author).booz()
-                await self.config.user(msg.author).booz.set(booz + 5)
-        except asyncio.TimeoutError:
-            await channel.send(f"❌ Tijd is om! Het juiste antwoord was: **{antwoord}**")
-        self.quiz_active = False
-
-    async def generate_quiz(self, thema, moeilijkheid):
-        if not self.api_key:
-            return "Wat is 1+1?", "2"
-
-        prompt = f"Genereer een quizvraag in het thema '{thema}' met moeilijkheid '{moeilijkheid}'.\nFormat:\nVraag: ...\nAntwoord: ..."
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        json = {
-            "model": "gpt-4o-mini",
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 200,
-            "temperature": 0.7
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.post("https://api.openai.com/v1/chat/completions", headers=headers, json=json) as r:
-                data = await r.json()
-
-        content = data["choices"][0]["message"]["content"]
-        vraag = re.findall(r"Vraag:(.*)", content)
-        antwoord = re.findall(r"Antwoord:(.*)", content)
-        return vraag[0].strip() if vraag else "Onbekende vraag", antwoord[0].strip() if antwoord else "?"
 
 
 async def setup(bot):
