@@ -127,7 +127,7 @@ class BoozyBank(commands.Cog):
         if not voice or not voice.channel:
             return await ctx.send("Je moet in een voicekanaal zitten met minstens 3 gebruikers!")
         members = [m for m in voice.channel.members if not m.bot]
-        if len(members) < 3:
+        if len(members) < 1:
             return await ctx.send("Minstens 3 gebruikers in voice vereist voor de quiz!")
 
         await self.start_quiz(ctx.channel, members, thema, moeilijkheid)
