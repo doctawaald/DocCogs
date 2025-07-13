@@ -137,11 +137,15 @@ class BoozyBank(commands.Cog):
 
     async def start_quiz(self, channel, players, thema, moeilijkheid):
         self.quiz_active = True
-        try:
-            typing = channel.typing()
-            await typing.__aenter__()
-            await channel.send("🤔 BoozyBoi denkt na over iets doms...")
+        recent_questions = getattr(self, "_recent_questions", [])
+        for _ in range(5):
             vraag, antwoord = await self.generate_quiz(thema, moeilijkheid)
+            if vraag not in recent_questions:
+                break
+        recent_questions.append(vraag)
+        if len(recent_questions) > 10:
+            recent_questions.pop(0)
+        self._recent_questions = recent_questions
             await typing.__aexit__(None, None, None)
             await channel.send(f"🎮 **BoozyQuiz™ Tijd!** Thema: *{thema}* | Moeilijkheid: *{moeilijkheid}*\n**Vraag:** {vraag}")
 
