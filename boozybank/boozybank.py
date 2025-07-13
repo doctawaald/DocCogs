@@ -13,6 +13,7 @@ import datetime
 import asyncio
 import aiohttp
 import re
+from random import randint
 
 class BoozyBank(commands.Cog):
     """BoozyBank™ - Verdien Boo'z, koop chaos en quiz je kapot."""
@@ -176,13 +177,13 @@ Antwoord: munt
             async with session.post("https://api.openai.com/v1/chat/completions", headers=headers, json=json_data) as resp:
                 data = await resp.json()
                 raw = data["choices"][0]["message"]["content"]
-                match = re.findall(r"Vraag:(.*?)\nAntwoord:(.*)", raw, re.DOTALL)
+                match = re.findall(r"Vraag:(.*?)
+Antwoord:(.*)", raw, re.DOTALL)
                 if match:
                     vraag, antwoord = match[0]
-                    from random import randint
-            # Voeg een random token toe om duplicate caching te vermijden
-            vraag += f" [{randint(1000,9999)}]"
-            return vraag.strip(), antwoord.strip()
+                    vraag += f" [{randint(1000,9999)}]"
+                    return vraag.strip(), antwoord.strip()
+                else:
                     return "Wat is 1+1?", "2"
 
     async def voice_reward_loop(self):
