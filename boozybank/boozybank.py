@@ -183,7 +183,7 @@ Antwoord: munt
             # Voeg een random token toe om duplicate caching te vermijden
             vraag += f" [{randint(1000,9999)}]"
             return vraag.strip(), antwoord.strip()
-                return "Wat is 1+1?", "2"
+                    return "Wat is 1+1?", "2"
 
     async def voice_reward_loop(self):
         await self.bot.wait_until_ready()
