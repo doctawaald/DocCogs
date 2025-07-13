@@ -148,11 +148,9 @@ class BoozyBank(commands.Cog):
         self._recent_questions = recent_questions
 
         async with channel.typing():
-            await asyncio.sleep(1.5)
-
-        await channel.send(f"🤔 BoozyBoi denkt na over *{thema}*...")
-        await asyncio.sleep(1.5)
-        await channel.send(f"🎮 **BoozyQuiz™ Tijd!** Thema: *{thema}* | Moeilijkheid: *{moeilijkheid}*\n**Vraag:** {vraag}")
+            await channel.send(f"🤔 BoozyBoi denkt na over *{thema}*...")
+            await asyncio.sleep(1)
+            await channel.send(f"🎮 **BoozyQuiz™ Tijd!** Thema: *{thema}* | Moeilijkheid: *{moeilijkheid}*\n**Vraag:** {vraag}")
 
         def check(m):
             return (
@@ -170,7 +168,7 @@ class BoozyBank(commands.Cog):
             )
             await channel.send(f"🎉 Correct, {msg.author.mention}! Je wint **{reward} Boo'z**.")
         except asyncio.TimeoutError:
-            await channel.send(f"🤦 Niemand wist het... volgende keer beter. Het juiste antwoord was: **{antwoord}**")
+            await channel.send(f"🎶 Niemand wist het... volgende keer beter. Het juiste antwoord was: **{antwoord}**.")
         finally:
             self.quiz_active = False
 
