@@ -136,8 +136,7 @@ class BoozyBank(commands.Cog):
         await self.start_quiz(ctx.channel, members, thema, moeilijkheid)
 
     async def start_quiz(self, channel, players, thema, moeilijkheid):
-        self.quiz_active = True
-        recent_questions = getattr(self, "_recent_questions", [])
+        # Already handled above
         for _ in range(5):
             vraag, antwoord = await self.generate_quiz(thema, moeilijkheid)
             if vraag not in recent_questions:
@@ -167,6 +166,7 @@ class BoozyBank(commands.Cog):
             except asyncio.TimeoutError:
                 await channel.send("🤦 Niemand wist het... volgende keer beter.")
         finally:
+            await typing.__aexit__(None, None, None)
             self.quiz_active = False
 
     async def generate_quiz(self, thema, moeilijkheid):
