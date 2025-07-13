@@ -198,3 +198,7 @@ Antwoord: munt
         if now.hour < 4:
             reset -= datetime.timedelta(days=1)
         return reset
+
+
+def setup(bot):
+    bot.add_cog(BoozyBank(bot))
