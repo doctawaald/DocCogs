@@ -90,6 +90,80 @@ class BoozyBank(commands.Cog):
                     print(f"[BoozyBank VC loop error] {e}")
             await asyncio.sleep(60)
 
+    def get_today_4am_utc(self):
+        now = datetime.datetime.utcnow()
+        if now.hour < 4:
+            now = now - datetime.timedelta(days=1)
+        return now.replace(hour=4, minute=0, second=0, microsecond=0)
+
+    async def fetch_question(self, thema, moeilijkheid):
+        async with aiohttp.ClientSession() as session:
+            prompt = f"Geef me een quizvraag over het thema '{thema}' met moeilijkheid '{moeilijkheid}'. Geef enkel de vraag op de eerste regel en het antwoord op de tweede."
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+            json_data = {
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "user", "content": prompt}
+                ]
+            }
+            async with session.post("https://api.openai.com/v1/chat/completions", headers=headers, json=json_data) as resp:
+                data = await resp.json()
+                content = data["choices"][0]["message"]["content"]
+                match = re.findall(r"Vraag:(.*?)\\nAntwoord:(.*)", content, re.DOTALL)
+                if match:
+                    vraag, antwoord = match[0]
+                else:
+                    parts = content.split("\n")
+                    vraag = parts[0] if parts else "Wat is 1+1?"
+                    antwoord = parts[1] if len(parts) > 1 else "2"
+                return vraag.strip(), antwoord.strip()
+
+    @commands.command()
+    async def boozyquiz(self, ctx, thema: str = "algemeen", moeilijkheid: str = "medium", auto: bool = False):
+        """Start handmatig of automatisch een quiz."""
+        if self.quiz_active:
+            return await ctx.send("⏳ Er is al een quiz bezig...")
+
+        quiz_chan_id = await self.config.guild(ctx.guild).quiz_channel()
+        if auto and ctx.channel.id != quiz_chan_id:
+            return
+
+        if auto:
+            await ctx.send(f"🤔 BoozyBoi denkt na over een quiz over **{thema}**...")
+            await asyncio.sleep(3)
+            preview = await ctx.send(f"📣 Zin in een quiz over **{thema}**? Reageer met iets binnen 15s om te starten!")
+
+            def check(m):
+                return m.channel == ctx.channel and not m.author.bot
+
+            try:
+                await self.bot.wait_for("message", check=check, timeout=15.0)
+            except asyncio.TimeoutError:
+                return await ctx.send("⏹️ Geen interesse, quiz afgebroken.")
+
+        self.quiz_active = True
+        try:
+            async with ctx.channel.typing():
+                vraag, antwoord = await self.fetch_question(thema, moeilijkheid)
+
+            await ctx.send(f"❓**{vraag}** (15s)\n*Antwoord in de chat!*")
+
+            def antwoord_check(m):
+                return m.channel == ctx.channel and not m.author.bot
+
+            try:
+                msg = await self.bot.wait_for("message", check=antwoord_check, timeout=15.0)
+                if is_correct(msg.content, antwoord):
+                    await ctx.send(f"✅ Correct, {msg.author.mention}! Dat verdient 5 Boo'z.")
+                    saldo = await self.config.user(msg.author).booz()
+                    await self.config.user(msg.author).booz.set(saldo + 5)
+                else:
+                    await ctx.send(f"❌ Nope. Het juiste antwoord was: **{antwoord}**")
+            except asyncio.TimeoutError:
+                await ctx.send(f"⌛ Niemand heeft geantwoord. Het juiste antwoord was: **{antwoord}**")
+        finally:
+            self.quiz_active = False
+
     @commands.command()
     async def booz(self, ctx):
         """Bekijk je saldo."""
@@ -119,76 +193,33 @@ class BoozyBank(commands.Cog):
         await self.config.user(ctx.author).booz.set(saldo - price)
         await ctx.send(f"✅ Je hebt **{item}** gekocht voor {price} Boo'z!")
 
-    async def boozyquiz(self, ctx, thema: str = "algemeen", moeilijkheid: str = "medium", auto: bool = False):
-        if self.quiz_active:
-            return await ctx.send("Er loopt al een quiz, even geduld...")
-        self.quiz_active = True
+    @commands.command()
+    @commands.has_permissions(manage_guild=True)
+    async def setquizchannel(self, ctx):
+        """Stel het huidige kanaal in als quizkanaal."""
+        await self.config.guild(ctx.guild).quiz_channel.set(ctx.channel.id)
+        await ctx.send(f"✅ Quizkanaal ingesteld op {ctx.channel.mention}.")
 
-        if auto:
-            await ctx.send(f"🤔 BoozyBoi denkt na over een quiz over **{thema}**...")
-            await asyncio.sleep(2)
-            await ctx.send(f"📢 Klaar voor een quiz over **{thema}**? Type iets om te starten!")
+    @commands.command()
+    @commands.has_permissions(manage_channels=True)
+    async def excludechannel(self, ctx):
+        """Sluit dit kanaal uit van rewards."""
+        current = await self.config.guild(ctx.guild).excluded_channels()
+        if ctx.channel.id not in current:
+            current.append(ctx.channel.id)
+            await self.config.guild(ctx.guild).excluded_channels.set(current)
+            await ctx.send("🚫 Dit kanaal wordt nu genegeerd voor rewards.")
+        else:
+            await ctx.send("⚠️ Dit kanaal stond al op de uitsluitlijst.")
 
-            def check(m):
-                return m.channel == ctx.channel and not m.author.bot
-
-            try:
-                await self.bot.wait_for("message", check=check, timeout=60)
-            except asyncio.TimeoutError:
-                await ctx.send("Niemand reageerde... Geen quiz vandaag 😔")
-                self.quiz_active = False
-                return
-
-        question, answer = await self.generate_quiz_question(thema, moeilijkheid)
-        async with ctx.typing():
-            await asyncio.sleep(1.5)
-        await ctx.send(f"**Vraag:** {question}\nAntwoord binnen 20 seconden!")
-
-        def check(m):
-            return m.channel == ctx.channel and not m.author.bot
-
-        try:
-            msg = await self.bot.wait_for("message", check=check, timeout=20)
-            if is_correct(msg.content, answer):
-                await ctx.send(f"✅ Correct, {msg.author.mention}! Je wint 5 Boo'z.")
-                booz = await self.config.user(msg.author).booz()
-                await self.config.user(msg.author).booz.set(booz + 5)
-            else:
-                await ctx.send(f"❌ Nope, het juiste antwoord was: **{answer}**")
-        except asyncio.TimeoutError:
-            await ctx.send(f"⏱️ Tijd om! Het juiste antwoord was: **{answer}**")
-
-        self.quiz_active = False
-
-    async def generate_quiz_question(self, thema, moeilijkheid):
-        if not self.api_key:
-            return "Wat is 1+1?", "2"
-
-        prompt = f"Geef één multiple choice quizvraag over het onderwerp '{thema}' met moeilijkheid '{moeilijkheid}'. Geef enkel de vraagtekst en het correcte antwoord op aparte regels."
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "model": "gpt-4o-mini",
-            "messages": [{"role": "user", "content": prompt}]
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.post("https://api.openai.com/v1/chat/completions", headers=headers, json=data) as resp:
-                res = await resp.json()
-                output = res["choices"][0]["message"]["content"]
-                match = re.findall(r"Vraag:(.*?)\nAntwoord:(.*)", output, re.DOTALL)
-                if match:
-                    return match[0][0].strip(), match[0][1].strip()
-                return "Wat is 1+1?", "2"
-
-    def get_today_4am_utc(self):
-        now = datetime.datetime.utcnow()
-        reset = now.replace(hour=4, minute=0, second=0, microsecond=0)
-        if now.hour < 4:
-            reset -= datetime.timedelta(days=1)
-        return reset
-
-
-async def setup(bot):
-    await bot.add_cog(BoozyBank(bot))
+    @commands.command()
+    @commands.has_permissions(manage_channels=True)
+    async def includechannel(self, ctx):
+        """Verwijder dit kanaal uit de uitsluitlijst."""
+        current = await self.config.guild(ctx.guild).excluded_channels()
+        if ctx.channel.id in current:
+            current.remove(ctx.channel.id)
+            await self.config.guild(ctx.guild).excluded_channels.set(current)
+            await ctx.send("✅ Dit kanaal doet weer mee met rewards.")
+        else:
+            await ctx.send("ℹ️ Dit kanaal stond niet op de uitsluitlijst.")
