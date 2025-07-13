@@ -5,15 +5,17 @@
 import discord
 from redbot.core import commands, Config, checks
 from difflib import SequenceMatcher
-
-def is_correct(user_input, correct_answer):
-    ratio = SequenceMatcher(None, user_input.lower(), correct_answer.lower()).ratio()
-    return correct_answer.lower() in user_input.lower() or ratio > 0.8
+from random import randint
 import datetime
 import asyncio
 import aiohttp
 import re
-from random import randint
+
+
+def is_correct(user_input, correct_answer):
+    ratio = SequenceMatcher(None, user_input.lower(), correct_answer.lower()).ratio()
+    return correct_answer.lower() in user_input.lower() or ratio > 0.8
+
 
 class BoozyBank(commands.Cog):
     """BoozyBank™ - Verdien Boo'z, koop chaos en quiz je kapot."""
@@ -135,18 +137,18 @@ class BoozyBank(commands.Cog):
         try:
             typing = channel.typing()
             await typing.__aenter__()
-            vraag, antwoord = await self.generate_quiz(thema, moeilijkheid)
             await channel.send("🤔 BoozyBoi denkt na over iets doms...")
+            vraag, antwoord = await self.generate_quiz(thema, moeilijkheid)
             await typing.__aexit__(None, None, None)
             await channel.send(f"🎮 **BoozyQuiz™ Tijd!** Thema: *{thema}* | Moeilijkheid: *{moeilijkheid}*\n**Vraag:** {vraag}")
 
             def check(m):
-                    return (
-                        m.channel == channel
-                        and m.author in players
-                        and not m.author.bot
-                        and is_correct(m.content, antwoord)
-                    )
+                return (
+                    m.channel == channel
+                    and m.author in players
+                    and not m.author.bot
+                    and is_correct(m.content, antwoord)
+                )
 
             try:
                 msg = await self.bot.wait_for("message", check=check, timeout=30.0)
@@ -161,28 +163,24 @@ class BoozyBank(commands.Cog):
             self.quiz_active = False
 
     async def generate_quiz(self, thema, moeilijkheid):
-        prompt = (
-            f"Je bent BoozyBoi, een dronken quizmaster. Stel één quizvraag over het onderwerp '",
-            f"{thema}' met moeilijkheid '{moeilijkheid}'. Geef enkel het antwoord apart op de tweede regel.
-"
-            "Voorbeeld:
-"
-            "Vraag: Wat zit er in een mojito?
-"
-            "Antwoord: munt"
-        )
+        prompt = f"""
+Je bent BoozyBoi, een dronken quizmaster. Stel één quizvraag over het onderwerp '{thema}' met moeilijkheid '{moeilijkheid}'.
+Geef enkel het antwoord apart op de tweede regel.
+Voorbeeld:
+Vraag: Wat zit er in een mojito?
+Antwoord: munt
+"""
         async with aiohttp.ClientSession() as session:
             headers = {"Authorization": f"Bearer {self.api_key}"}
             json_data = {
                 "model": "gpt-4o",
-                "messages": [{"role": "user", "content": ''.join(prompt)}],
+                "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.7
             }
             async with session.post("https://api.openai.com/v1/chat/completions", headers=headers, json=json_data) as resp:
                 data = await resp.json()
                 raw = data["choices"][0]["message"]["content"]
-                match = re.findall(r"Vraag:(.*?)
-Antwoord:(.*)", raw, re.DOTALL)
+                match = re.findall(r"Vraag:(.*?)\nAntwoord:(.*)", raw, re.DOTALL)
                 if match:
                     vraag, antwoord = match[0]
                     vraag += f" [{randint(1000,9999)}]"
@@ -217,5 +215,5 @@ Antwoord:(.*)", raw, re.DOTALL)
         return reset
 
 
-def setup(bot):
-    bot.add_cog(BoozyBank(bot))
+async def setup(bot):
+    await bot.add_cog(BoozyBank(bot))
