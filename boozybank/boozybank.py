@@ -119,7 +119,7 @@ class BoozyBank(commands.Cog):
         if not voice or not voice.channel:
             return await ctx.send("Je moet in een voicekanaal zitten met minstens 3 gebruikers!")
         members = [m for m in voice.channel.members if not m.bot]
-        if len(members) < 1:
+        if len(members) < 3:
             return await ctx.send("Minstens 3 gebruikers in voice vereist voor de quiz!")
 
         await self.start_quiz(ctx.channel, members, thema, moeilijkheid)
@@ -127,16 +127,26 @@ class BoozyBank(commands.Cog):
     async def start_quiz(self, channel, players, thema, moeilijkheid):
         self.quiz_active = True
         try:
+            typing = channel.typing()
+            await typing.__aenter__()
             vraag, antwoord = await self.generate_quiz(thema, moeilijkheid)
+            await channel.send("🤔 BoozyBoi denkt na over iets doms...")
+            await typing.__aexit__(None, None, None)
             await channel.send(f"🎮 **BoozyQuiz™ Tijd!** Thema: *{thema}* | Moeilijkheid: *{moeilijkheid}*\n**Vraag:** {vraag}")
 
-            def check(m):
-                return (
-                    m.channel == channel
-                    and m.author in players
-                    and not m.author.bot
-                    and antwoord.lower() in m.content.lower()
-                )
+            from difflib import SequenceMatcher
+
+                def is_correct(user_input, correct_answer):
+                    ratio = SequenceMatcher(None, user_input.lower(), correct_answer.lower()).ratio()
+                    return correct_answer.lower() in user_input.lower() or ratio > 0.8
+
+                def check(m):
+                    return (
+                        m.channel == channel
+                        and m.author in players
+                        and not m.author.bot
+                        and is_correct(m.content, antwoord)
+                    )
 
             try:
                 msg = await self.bot.wait_for("message", check=check, timeout=30.0)
@@ -170,7 +180,10 @@ Antwoord: munt
                 match = re.findall(r"Vraag:(.*?)\nAntwoord:(.*)", raw, re.DOTALL)
                 if match:
                     vraag, antwoord = match[0]
-                    return vraag.strip(), antwoord.strip()
+                    from random import randint
+            # Voeg een random token toe om duplicate caching te vermijden
+            vraag += f" [{randint(1000,9999)}]"
+            return vraag.strip(), antwoord.strip()
                 return "Wat is 1+1?", "2"
 
     async def voice_reward_loop(self):
