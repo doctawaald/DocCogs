@@ -4,6 +4,11 @@
 
 import discord
 from redbot.core import commands, Config, checks
+from difflib import SequenceMatcher
+
+def is_correct(user_input, correct_answer):
+    ratio = SequenceMatcher(None, user_input.lower(), correct_answer.lower()).ratio()
+    return correct_answer.lower() in user_input.lower() or ratio > 0.8
 import datetime
 import asyncio
 import aiohttp
@@ -134,13 +139,7 @@ class BoozyBank(commands.Cog):
             await typing.__aexit__(None, None, None)
             await channel.send(f"🎮 **BoozyQuiz™ Tijd!** Thema: *{thema}* | Moeilijkheid: *{moeilijkheid}*\n**Vraag:** {vraag}")
 
-            from difflib import SequenceMatcher
-
-                def is_correct(user_input, correct_answer):
-                    ratio = SequenceMatcher(None, user_input.lower(), correct_answer.lower()).ratio()
-                    return correct_answer.lower() in user_input.lower() or ratio > 0.8
-
-                def check(m):
+            def check(m):
                     return (
                         m.channel == channel
                         and m.author in players
