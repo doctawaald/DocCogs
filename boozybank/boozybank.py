@@ -145,7 +145,7 @@ class BoozyBank(commands.Cog):
         if len(recent_questions) > 10:
             recent_questions.pop(0)
         self._recent_questions = recent_questions
-            await typing.__aexit__(None, None, None)
+                        await typing.__aexit__(None, None, None)
             await channel.send(f"🎮 **BoozyQuiz™ Tijd!** Thema: *{thema}* | Moeilijkheid: *{moeilijkheid}*\n**Vraag:** {vraag}")
 
             def check(m):
@@ -166,7 +166,7 @@ class BoozyBank(commands.Cog):
             except asyncio.TimeoutError:
                 await channel.send("🤦 Niemand wist het... volgende keer beter.")
         finally:
-            await typing.__aexit__(None, None, None)
+                        await typing.__aexit__(None, None, None)
             self.quiz_active = False
 
     async def generate_quiz(self, thema, moeilijkheid):
