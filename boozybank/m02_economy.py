@@ -6,7 +6,7 @@ class EconomyMixin:
     async def booz(self, ctx: commands.Context):
         """Bekijk je saldo (Boo'z)."""
         bal = await self.config.user(ctx.author).booz()
-        await ctx.send(f"💰 {ctx.author.mention}, je heeft **{bal} Boo'z**.")
+        await ctx.send(f"💰 {ctx.author.mention}, je hebt **{bal} Boo'z**.")
 
     @commands.command()
     async def give(self, ctx: commands.Context, member: discord.Member, amount: int):
