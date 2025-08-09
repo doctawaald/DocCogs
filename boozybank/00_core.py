@@ -1,11 +1,11 @@
 import asyncio
 from redbot.core import Config, commands
 
-from .01_utils import FALLBACK_BANK  # ensures file is loaded early
-from .04_rewards import RewardsMixin
-from .05_quiz import QuizMixin
-from .02_economy import EconomyMixin
-from .03_settings import SettingsMixin
+from .m01_utils import FALLBACK_BANK  # forceer laden utils
+from .m04_rewards import RewardsMixin
+from .m05_quiz import QuizMixin
+from .m02_economy import EconomyMixin
+from .m03_settings import SettingsMixin
 
 class BoozyBank(RewardsMixin, QuizMixin, EconomyMixin, SettingsMixin, commands.Cog):
     """BoozyBank™ — Verdien Boo'z, quiz en koop dingen. Geen pay-to-win, iedereen gelijk."""
