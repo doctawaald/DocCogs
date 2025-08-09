@@ -1,4 +1,5 @@
-# BoozyBank — Economy + BoozyQuiz (3 vragen, 1 poging p/p, cleanup, anti-dup)
+# BoozyBank — Economy + BoozyQuiz (5 vragen, 1 poging p/p, cleanup, anti-dup)
+# Rewards alleen aan eind-winnaar(s); alle rewards instelbaar; daglimiet 5 rewards pp
 # by ChatGPT 5 & dOCTAWAALd 🍻👻
 
 import asyncio
@@ -54,37 +55,6 @@ def normalize_theme(thema: str) -> str:
     }
     return mapping.get(t, t or "algemeen")
 
-DIFF_REWARD = {"easy": 5, "makkelijk": 5, "medium": 10, "hard": 20}
-
-# ---------- Fallback vraagbank ----------
-FALLBACK_BANK: Dict[str, List[MCQ]] = {
-    "games": [
-        MCQ("Welke studio maakte *The Witcher 3*?", ["CD Projekt Red", "Ubisoft", "Bethesda", "Bioware"], "A"),
-        MCQ("Welke console kreeg *Halo* groot?", ["PlayStation 2", "Xbox", "GameCube", "Dreamcast"], "B"),
-        MCQ("Hoe heet de prinses in *The Legend of Zelda*?", ["Zelda", "Peach", "Samus", "Daisy"], "A"),
-    ],
-    "alcohol": [
-        MCQ("Basisdrank van een klassieke Margarita?", ["Rum", "Wodka", "Tequila", "Gin"], "C"),
-        MCQ("Cocktail met munt, limoen en rum?", ["Mojito", "Negroni", "Old Fashioned", "Margarita"], "A"),
-        MCQ("Wat zit er in een Gin & Tonic?", ["Gin en soda", "Gin en tonic", "Vodka en tonic", "Rum en tonic"], "B"),
-    ],
-    "films": [
-        MCQ("Wie regisseerde *Inception*?", ["Christopher Nolan", "Steven Spielberg", "Ridley Scott", "Denis Villeneuve"], "A"),
-        MCQ("Uit welke serie komt 'May the Force be with you'?", ["Star Trek", "Star Wars", "Dune", "Avatar"], "B"),
-        MCQ("Welke film won Best Picture in 1994?", ["Forrest Gump", "Pulp Fiction", "The Shawshank Redemption", "Braveheart"], "A"),
-    ],
-    "boardgames": [
-        MCQ("Hoeveel velden heeft een schaakbord?", ["64", "81", "72", "100"], "A"),
-        MCQ("Welke resource bestaat niet in *Catan*?", ["Wol", "Goud", "Hout", "Klei"], "B"),
-        MCQ("In Ticket to Ride verzamel je…", ["Treinkaarten", "Schepen", "Vliegtuigen", "Auto’s"], "A"),
-    ],
-    "algemeen": [
-        MCQ("Symbool van zuurstof?", ["O", "Au", "Ag", "Fe"], "A"),
-        MCQ("Dichtst bij de zon?", ["Aarde", "Mars", "Mercurius", "Venus"], "C"),
-        MCQ("3 × 3 = ?", ["6", "8", "9", "12"], "C"),
-    ],
-}
-
 # ---------- Cog ----------
 class BoozyBank(commands.Cog):
     """BoozyBank™ — Verdien Boo'z, quiz en koop dingen. Geen pay-to-win, iedereen gelijk."""
@@ -93,27 +63,48 @@ class BoozyBank(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=69421, force_registration=True)
 
-        default_user = {"booz": 0, "last_chat": 0, "last_voice": 0}
+        # User & Guild defaults (alles instelbaar)
+        default_user = {
+            "booz": 0,
+            "last_chat": 0,                # ts laatste chat reward
+            "last_voice": 0,               # ts laatste voice reward
+            "quiz_rewards_today": 0,       # aantal keer dat user vandaag een QUIZ-eindreward kreeg
+            "quiz_reward_reset": 0.0,      # ts van laatste reset cutoff die we gezien hebben
+        }
         default_guild = {
+            # Shop voorbeeld
             "shop": {
                 "soundboard_access": {"price": 100, "role_id": None},
                 "color_role": {"price": 50, "role_id": None},
                 "boozy_quote": {"price": 25, "role_id": None},
             },
+            # Random drop & auto-quiz state
             "last_drop": 0.0,
             "last_quiz": 0.0,
-            "excluded_channels": [],
-            "quiz_channel": None,
+            # Kanalen
+            "excluded_channels": [],      # geen rewards hier
+            "quiz_channel": None,         # kanaal voor auto-quiz aanvragen
+            # Cleanup
             "quiz_autoclean": True,
             "quiz_clean_delay": 5,
-            "test_mode": False,        # als True: TEST_USER_ID mag solo spelen zonder reward
-            "asked_questions": [],     # persistente anti-dup lijst (laatste 50 vragenstrings)
+            # Testmodus
+            "test_mode": False,           # als True: TEST_USER_ID mag solo spelen zonder reward
+            # Anti-duplicatie (persistente vragen)
+            "asked_questions": [],        # laatste 50 vraagstrings
+            # === Rewards & timings (instelbaar) ===
+            "chat_msg_reward": 1,         # Boo'z per chat reward
+            "chat_msg_cooldown_sec": 300, # cooldown tussen chat rewards
+            "voice_reward_amount": 1,     # Boo'z per voice tick
+            "voice_cooldown_sec": 300,    # cooldown tussen voice rewards
+            "random_drop_amount": 10,     # Boo'z bij random drop
+            "quiz_winner_reward_amount": 50,  # Boo'z voor eindwinnaar(s)
+            "quiz_reward_reset_hour": 4,      # dag-reset cutoff (0-23, server UTC)
         }
         self.config.register_user(**default_user)
         self.config.register_guild(**default_guild)
 
         self.quiz_active = False
-        self._recent_questions: List[str] = []  # in-memory anti-dup
+        self._recent_questions: List[str] = []  # in-memory anti-dup (laatste 50)
         self._api_key: Optional[str] = None
         self._auto_task = self.bot.loop.create_task(self._voice_loop())
         self.thema_pool = ["games", "alcohol", "films", "board games", "algemeen"]
@@ -129,12 +120,21 @@ class BoozyBank(commands.Cog):
         self._api_key = tokens.get("api_key")
         return self._api_key
 
-    def _reset_cutoff(self) -> float:
+    def _cutoff_ts(self, hour: int) -> float:
+        """Geef timestamp voor 'vandaag om <hour>:00 UTC' (of gisteren als we er nog niet zijn)."""
         now = datetime.datetime.utcnow()
-        reset = now.replace(hour=4, minute=0, second=0, microsecond=0)
+        reset = now.replace(hour=hour, minute=0, second=0, microsecond=0)
         if now < reset:
             reset -= datetime.timedelta(days=1)
         return reset.timestamp()
+
+    async def _ensure_user_quiz_reset(self, member: discord.Member):
+        g = await self.config.guild(member.guild).all()
+        cutoff = self._cutoff_ts(int(g.get("quiz_reward_reset_hour", 4)))
+        last_seen = await self.config.user(member).quiz_reward_reset()
+        if last_seen < cutoff:
+            await self.config.user(member).quiz_rewards_today.set(0)
+            await self.config.user(member).quiz_reward_reset.set(cutoff)
 
     def _record_recent_mem(self, q: str) -> None:
         self._recent_questions.append(q)
@@ -152,57 +152,76 @@ class BoozyBank(commands.Cog):
                 del lst[:-50]
 
     # ---------- Chat reward ----------
-    @commands.Cog.listener()
+    @commands.Cog.listener())
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.guild:
             return
-        excluded = await self.config.guild(message.guild).excluded_channels()
-        if message.channel.id in excluded:
+        g = await self.config.guild(message.guild).all()
+        if message.channel.id in g["excluded_channels"]:
             return
         now = datetime.datetime.utcnow().timestamp()
         last = await self.config.user(message.author).last_chat()
-        if now - last >= 300:
-            bal = await self.config.user(message.author).booz()
-            await self.config.user(message.author).booz.set(bal + 1)
+        if now - last >= int(g.get("chat_msg_cooldown_sec", 300)):
+            amt = int(g.get("chat_msg_reward", 1))
+            if amt > 0:
+                bal = await self.config.user(message.author).booz()
+                await self.config.user(message.author).booz.set(bal + amt)
             await self.config.user(message.author).last_chat.set(now)
 
-    # ---------- Voice loop (random drop + auto-quiz) ----------
+    # ---------- Voice loop (random drop + auto-quiz + voice rewards) ----------
     async def _voice_loop(self):
         await self.bot.wait_until_ready()
         while not self.bot.is_closed():
             try:
                 for guild in self.bot.guilds:
-                    # VC met meeste humans
+                    g = await self.config.guild(guild).all()
+
+                    # Voice reward tick per user in drukste VC
                     busiest = None
                     humans_count = 0
                     for vc in guild.voice_channels:
                         humans = [m for m in vc.members if not m.bot]
                         if len(humans) > humans_count:
                             busiest, humans_count = vc, len(humans)
+
+                    if busiest:
+                        now_ts = datetime.datetime.utcnow().timestamp()
+                        for m in [u for u in busiest.members if not u.bot]:
+                            lastv = await self.config.user(m).last_voice()
+                            if now_ts - lastv >= int(g.get("voice_cooldown_sec", 300)):
+                                amt = int(g.get("voice_reward_amount", 1))
+                                if amt > 0:
+                                    bal = await self.config.user(m).booz()
+                                    await self.config.user(m).booz.set(bal + amt)
+                                await self.config.user(m).last_voice.set(now_ts)
+
+                    # min. 3 humans vereist voor random drop + auto-quiz
                     if not busiest or humans_count < 3:
                         continue
 
                     now_ts = datetime.datetime.utcnow().timestamp()
-                    reset = self._reset_cutoff()
+                    cutoff = self._cutoff_ts(int(g.get("quiz_reward_reset_hour", 4)))
 
                     # random drop: 1×/nacht
-                    last_drop = await self.config.guild(guild).last_drop()
-                    if not last_drop or last_drop < reset:
+                    last_drop = g.get("last_drop", 0.0)
+                    if not last_drop or last_drop < cutoff:
                         lucky = random.choice([m for m in busiest.members if not m.bot])
-                        bal = await self.config.user(lucky).booz()
-                        await self.config.user(lucky).booz.set(bal + 10)
+                        amt = int(g.get("random_drop_amount", 10))
+                        if amt > 0:
+                            bal = await self.config.user(lucky).booz()
+                            await self.config.user(lucky).booz.set(bal + amt)
                         await self.config.guild(guild).last_drop.set(now_ts)
                         txt = guild.system_channel or next(
                             (c for c in guild.text_channels if c.permissions_for(guild.me).send_messages),
                             None,
                         )
                         if txt:
-                            await txt.send(f"🎉 Random drop! {lucky.mention} ontvangt **10 Boo'z**.")
+                            await txt.send(f"🎉 Random drop! {lucky.mention} ontvangt **{amt} Boo'z**.")
 
                     # auto-quiz: 1×/nacht, met aanvraag, random thema uit 5
-                    last_quiz = await self.config.guild(guild).last_quiz()
-                    if not last_quiz or last_quiz < reset:
-                        quiz_channel_id = await self.config.guild(guild).quiz_channel()
+                    last_quiz = g.get("last_quiz", 0.0)
+                    if not last_quiz or last_quiz < cutoff:
+                        quiz_channel_id = g.get("quiz_channel")
                         channel = guild.get_channel(quiz_channel_id) if quiz_channel_id else None
                         if not channel:
                             continue
@@ -221,9 +240,7 @@ class BoozyBank(commands.Cog):
                                 pass
                         else:
                             await self.config.guild(guild).last_quiz.set(now_ts)
-                            await self._start_quiz(
-                                channel, thema=thema, moeilijkheid="medium", is_test=False, count=3, include_ask=ask
-                            )
+                            await self._start_quiz(channel, thema=thema, moeilijkheid="hard", is_test=False, count=5, include_ask=ask)
             except Exception as e:
                 print(f"[BoozyBank voice loop] {e}")
             await asyncio.sleep(60)
@@ -233,18 +250,20 @@ class BoozyBank(commands.Cog):
         api_key = await self._get_api_key()
         if not api_key:
             return None
+        # Moeilijkere prompt
         prompt = (
-            "Maak één multiple-choice quizvraag als JSON. "
-            "Velden: question (string), options (array van exact 4 korte opties), answer (letter A/B/C/D). "
-            "Lever *alleen JSON* zonder extra tekst.\n"
+            "Genereer 1 uitdagende multiple-choice quizvraag als JSON. "
+            "Velden: question (string), options (array van exact 4 korte, plausibele opties), "
+            "answer (letter A/B/C/D). Lever alleen JSON zonder extra tekst.\n"
             f"Thema: {thema}\nMoeilijkheid: {moeilijkheid}\n"
-            "- Opties mogen geen labels zoals 'A.' of '1)' bevatten.\n"
-            "- Houd het kort."
+            "- Zorg dat de foute opties geloofwaardig maar incorrect zijn.\n"
+            "- Gebruik geen labels in de opties (geen 'A.' of '1)').\n"
+            "- Gebruik heldere, bondige formuleringen."
         )
         try:
             async with aiohttp.ClientSession() as sess:
                 payload = {
-                    "model": "gpt-4o-mini",
+                    "model": "gpt-5-mini",   # ➜ jouw nieuwe model
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.7,
                 }
@@ -388,43 +407,65 @@ class BoozyBank(commands.Cog):
     async def boozysettings(self, ctx: commands.Context):
         """Toon huidige BoozyBank-instellingen."""
         g = await self.config.guild(ctx.guild).all()
-        qch = ctx.guild.get_channel(g["quiz_channel"]) if g["quiz_channel"] else None
-        excluded = [ctx.guild.get_channel(cid) for cid in g["excluded_channels"]]
+        qch = ctx.guild.get_channel(g["quiz_channel"]) if g.get("quiz_channel") else None
+        excluded = [ctx.guild.get_channel(cid) for cid in g.get("excluded_channels", [])]
         exc_names = ", ".join(ch.mention for ch in excluded if ch) or "_geen_"
         asked_len = len(g.get("asked_questions", []))
         await ctx.send(
-            f"🛠 **Boozy settings**\n"
-            f"• Quizkanaal: {qch.mention if qch else '_niet ingesteld_'}\n"
-            f"• Excluded: {exc_names}\n"
-            f"• Auto-clean: {'aan' if g.get('quiz_autoclean', True) else 'uit'} "
-            f"(delay {g.get('quiz_clean_delay',5)}s)\n"
-            f"• Testmodus: {'aan' if g.get('test_mode', False) else 'uit'}\n"
-            f"• Anti-dup history: {asked_len} vraag/vragen bewaard"
+            "\n".join([
+                "🛠 **Boozy settings**",
+                f"• Quizkanaal: {qch.mention if qch else '_niet ingesteld_'}",
+                f"• Excluded: {exc_names}",
+                f"• Auto-clean: {'aan' if g.get('quiz_autoclean', True) else 'uit'} (delay {g.get('quiz_clean_delay',5)}s)",
+                f"• Testmodus: {'aan' if g.get('test_mode', False) else 'uit'}",
+                f"• Anti-dup history: {asked_len} vraag/vragen",
+                "• **Rewards**:",
+                f"   - Chat: +{g.get('chat_msg_reward',1)} Boo'z / {g.get('chat_msg_cooldown_sec',300)}s",
+                f"   - Voice: +{g.get('voice_reward_amount',1)} Boo'z / {g.get('voice_cooldown_sec',300)}s",
+                f"   - Random drop: +{g.get('random_drop_amount',10)} Boo'z",
+                f"   - Quiz winnaar: +{g.get('quiz_winner_reward_amount',50)} Boo'z",
+                f"   - Reset-uur (UTC): {g.get('quiz_reward_reset_hour',4)}",
+            ])
         )
 
+    # ---- Instel-commands voor alle rewards/timings ----
     @commands.command()
     @checks.admin()
-    async def boozyclean(self, ctx: commands.Context, status: str):
-        """Zet auto-clean aan/uit. Voorbeeld: !boozyclean on / off"""
-        on = status.lower() in ("on", "aan", "true", "yes", "1")
-        await self.config.guild(ctx.guild).quiz_autoclean.set(on)
-        await ctx.send(f"🧹 Auto-clean staat nu **{'aan' if on else 'uit'}**.")
+    async def setchatreward(self, ctx: commands.Context, amount: int, cooldown_sec: int):
+        """Stel chat reward in: !setchatreward <amount> <cooldown_sec>"""
+        await self.config.guild(ctx.guild).chat_msg_reward.set(max(0, amount))
+        await self.config.guild(ctx.guild).chat_msg_cooldown_sec.set(max(0, cooldown_sec))
+        await ctx.send(f"✅ Chat reward: +{max(0,amount)} / {max(0,cooldown_sec)}s")
 
     @commands.command()
     @checks.admin()
-    async def boozycleandelay(self, ctx: commands.Context, seconds: int):
-        """Stel vertraging in voor auto-clean (seconden)."""
-        seconds = max(0, min(120, seconds))
-        await self.config.guild(ctx.guild).quiz_clean_delay.set(seconds)
-        await ctx.send(f"⏱️ Auto-clean delay ingesteld op **{seconds}s**.")
+    async def setvoicereward(self, ctx: commands.Context, amount: int, cooldown_sec: int):
+        """Stel voice reward in: !setvoicereward <amount> <cooldown_sec>"""
+        await self.config.guild(ctx.guild).voice_reward_amount.set(max(0, amount))
+        await self.config.guild(ctx.guild).voice_cooldown_sec.set(max(0, cooldown_sec))
+        await ctx.send(f"✅ Voice reward: +{max(0,amount)} / {max(0,cooldown_sec)}s")
 
     @commands.command()
     @checks.admin()
-    async def boozytest(self, ctx: commands.Context, status: str):
-        """Zet testmodus aan/uit voor TEST_USER_ID. Voorbeeld: !boozytest on / off"""
-        on = status.lower() in ("on", "aan", "true", "yes", "1")
-        await self.config.guild(ctx.guild).test_mode.set(on)
-        await ctx.send(f"🧪 Testmodus staat nu **{'aan' if on else 'uit'}**.")
+    async def setrandomdrop(self, ctx: commands.Context, amount: int):
+        """Stel random drop in: !setrandomdrop <amount>"""
+        await self.config.guild(ctx.guild).random_drop_amount.set(max(0, amount))
+        await ctx.send(f"✅ Random drop: +{max(0,amount)} Boo'z")
+
+    @commands.command()
+    @checks.admin()
+    async def setquizreward(self, ctx: commands.Context, amount: int):
+        """Stel quiz eindwinnaar-reward in: !setquizreward <amount>"""
+        await self.config.guild(ctx.guild).quiz_winner_reward_amount.set(max(0, amount))
+        await ctx.send(f"✅ Quiz winnaar reward: +{max(0,amount)} Boo'z")
+
+    @commands.command()
+    @checks.admin()
+    async def setquizresethour(self, ctx: commands.Context, hour_utc: int):
+        """Stel reset-uur (UTC) in: !setquizresethour <0-23>"""
+        hour = min(23, max(0, int(hour_utc)))
+        await self.config.guild(ctx.guild).quiz_reward_reset_hour.set(hour)
+        await ctx.send(f"✅ Reset-uur gezet op {hour}:00 UTC")
 
     # ---------- Cleanup ----------
     async def _cleanup_messages(self, channel: discord.TextChannel, to_delete: List[discord.Message]):
@@ -446,10 +487,11 @@ class BoozyBank(commands.Cog):
 
     # ---------- Quiz ----------
     @commands.command()
-    async def boozyquiz(self, ctx: commands.Context, thema: str = "algemeen", moeilijkheid: str = "medium", vragen: int = 3):
+    async def boozyquiz(self, ctx: commands.Context, thema: str = "algemeen", moeilijkheid: str = "hard"):
         """
-        Start direct een BoozyQuiz™ met meerdere vragen (default 3).
+        Start direct een BoozyQuiz™ met **5 vragen**.
         Vereist 3+ humans in voice, behalve als testmodus=aan en jij TEST_USER_ID bent.
+        Rewards alleen aan eindwinnaar(s); limiet 5 belonende quizzes/dag/pp.
         """
         if self.quiz_active:
             return await ctx.send("⏳ Er is al een quiz bezig.")
@@ -463,17 +505,21 @@ class BoozyBank(commands.Cog):
         if not allow_bypass and len(humans) < 3:
             return await ctx.send("🔇 Je moet met minstens **3** gebruikers in een voice-kanaal zitten om te quizzen.")
 
-        vragen = max(1, min(10, int(vragen)))
-        await self._start_quiz(ctx.channel, thema=thema, moeilijkheid=moeilijkheid, is_test=allow_bypass, count=vragen, include_ask=None)
+        # Info: starter over z'n daglimiet? (echte check bij winners)
+        await self._ensure_user_quiz_reset(ctx.author)
+        starter_today = await self.config.user(ctx.author).quiz_rewards_today()
+        if starter_today >= 5:
+            await ctx.send("ℹ️ Daglimiet bereikt: deze quiz speelt **zonder** eindreward voor jou als je wint.")
+
+        await self._start_quiz(ctx.channel, thema=thema, moeilijkheid=moeilijkheid, is_test=allow_bypass, count=5, include_ask=None)
 
     @commands.command()
     @checks.admin()
-    async def boozyquiztest(self, ctx: commands.Context, thema: str = "algemeen", moeilijkheid: str = "medium", vragen: int = 3):
-        """Forceer een testquiz (nooit rewards), handig voor solo testen."""
+    async def boozyquiztest(self, ctx: commands.Context, thema: str = "algemeen", moeilijkheid: str = "hard"):
+        """Forceer een testquiz (altijd zonder rewards), handig voor solo testen."""
         if self.quiz_active:
             return await ctx.send("⏳ Er is al een quiz bezig.")
-        vragen = max(1, min(10, int(vragen)))
-        await self._start_quiz(ctx.channel, thema=thema, moeilijkheid=moeilijkheid, is_test=True, count=vragen, include_ask=None)
+        await self._start_quiz(ctx.channel, thema=thema, moeilijkheid=moeilijkheid, is_test=True, count=5, include_ask=None)
 
     async def _start_quiz(
         self,
@@ -489,12 +535,11 @@ class BoozyBank(commands.Cog):
         all_round_msgs: List[discord.Message] = []
         all_answer_msgs: List[discord.Message] = []
         if include_ask:
-            all_round_msgs.append(include_ask)  # ook de "Zin in een quiz?"-aanvraag meewissen
+            all_round_msgs.append(include_ask)  # ook de aanvraag meewissen
         scores: Dict[int, int] = {}
 
         try:
             for ronde in range(1, count + 1):
-                # vraag genereren met anti-dup tegen guild-geschiedenis
                 async with channel.typing():
                     mcq = await self._generate_mcq(channel.guild, thema, moeilijkheid)
 
@@ -505,7 +550,7 @@ class BoozyBank(commands.Cog):
 
                 end_time = asyncio.get_event_loop().time() + 25
                 winner: Optional[discord.Member] = None
-                attempted: set[int] = set()  # 1 poging per gebruiker
+                attempted: set[int] = set()
 
                 while True:
                     timeout = max(0, end_time - asyncio.get_event_loop().time())
@@ -539,42 +584,55 @@ class BoozyBank(commands.Cog):
                         continue
 
                 if winner:
-                    reward = DIFF_REWARD.get(moeilijkheid.lower(), 10)
-                    reason = None
-
-                    # geen reward in excluded kanalen
-                    excluded = await self.config.guild(channel.guild).excluded_channels()
-                    if channel.id in excluded:
-                        reward, reason = 0, "excluded kanaal"
-
-                    # testmodus: alleen TEST_USER_ID is test; anderen krijgen normaal reward
-                    g = await self.config.guild(channel.guild).all()
-                    if g.get("test_mode", False) and winner.id == TEST_USER_ID:
-                        reward, reason = 0, "testmodus"
-
                     scores[winner.id] = scores.get(winner.id, 0) + 1
-
-                    if reward > 0:
-                        bal = await self.config.user(winner).booz()
-                        await self.config.user(winner).booz.set(bal + reward)
-
-                    rmsg = await channel.send(
-                        f"✅ Correct, {winner.mention}! (+{reward} Boo'z)" + (f" *(geen reward: {reason})*" if reason else "")
-                    )
+                    rmsg = await channel.send(f"✅ {winner.mention} pakt deze ronde!")
                     all_round_msgs.append(rmsg)
                 else:
                     ct = mcq.options[letter_index(mcq.answer_letter)]
-                    imsg = await channel.send(f"⌛ Niemand goed geantwoord. Antwoord: **{mcq.answer_letter}** — {ct}")
+                    imsg = await channel.send(f"⌛ Tijd! Antwoord: **{mcq.answer_letter}** — {ct}")
                     all_round_msgs.append(imsg)
 
-            # eindscore
+            # Eindwinnaar(s) bepalen + belonen op het einde
             if scores:
-                lines = []
+                best = max(scores.values())
+                winners_ids = [uid for uid, pts in scores.items() if pts == best]
+                winners = [channel.guild.get_member(uid) for uid in winners_ids if channel.guild.get_member(uid)]
+                names = ", ".join(w.display_name for w in winners) if winners else "_onbekend_"
+
+                g = await self.config.guild(channel.guild).all()
+                excluded = g.get("excluded_channels", [])
+                reward_amt = int(g.get("quiz_winner_reward_amount", 50))
+
+                summary = ["🏁 **Eindstand**"]
                 for uid, pts in sorted(scores.items(), key=lambda x: x[1], reverse=True):
                     m = channel.guild.get_member(uid)
                     if m:
-                        lines.append(f"• **{m.display_name}** — {pts} punt(en)")
-                smsg = await channel.send("🏁 **Eindstand**\n" + "\n".join(lines))
+                        summary.append(f"• **{m.display_name}** — {pts} punt(en)")
+                summary.append(f"🏆 Winnaar(s): {names}")
+
+                reward_notes = []
+                if channel.id in excluded:
+                    reward_notes.append("geen rewards in excluded kanaal")
+                elif is_test:
+                    reward_notes.append("testmodus: geen rewards")
+                elif reward_amt <= 0:
+                    reward_notes.append("reward staat op 0")
+                else:
+                    for w in winners:
+                        await self._ensure_user_quiz_reset(w)
+                        today = await self.config.user(w).quiz_rewards_today()
+                        if today >= 5:
+                            reward_notes.append(f"{w.display_name}: daglimiet bereikt (geen reward)")
+                            continue
+                        bal = await self.config.user(w).booz()
+                        await self.config.user(w).booz.set(bal + reward_amt)
+                        await self.config.user(w).quiz_rewards_today.set(today + 1)
+                        reward_notes.append(f"{w.display_name}: +{reward_amt} Boo'z")
+
+                if reward_notes:
+                    summary.append("💰 Rewards: " + "; ".join(reward_notes))
+
+                smsg = await channel.send("\n".join(summary))
                 all_round_msgs.append(smsg)
             else:
                 smsg = await channel.send("🏁 **Eindstand**: _geen goede antwoorden dit keer._")
@@ -582,8 +640,36 @@ class BoozyBank(commands.Cog):
 
         finally:
             self.quiz_active = False
-            # Auto-clean
             g = await self.config.guild(channel.guild).all()
             if g.get("quiz_autoclean", True):
                 await asyncio.sleep(int(g.get("quiz_clean_delay", 5)))
                 await self._cleanup_messages(channel, all_round_msgs + all_answer_msgs)
+
+# ---------- Fallback bank ----------
+FALLBACK_BANK: Dict[str, List[MCQ]] = {
+    "games": [
+        MCQ("Welke mechanic definieert roguelikes het meest?", ["Permadeath", "Open world", "Co-op focus", "QTE's"], "A"),
+        MCQ("In *Dark Souls*, waar spendeer je Souls aan?", ["Stats levelen", "Wapens repareren", "Fast travel", "Co-op tokens"], "A"),
+        MCQ("Wie is de bedenker van *Metal Gear*?", ["Hideo Kojima", "Shigeru Miyamoto", "Gabe Newell", "Todd Howard"], "A"),
+    ],
+    "alcohol": [
+        MCQ("Welke gin-stijl is doorgaans droger?", ["London Dry", "Old Tom", "Genever", "Plymouth Sweet"], "A"),
+        MCQ("Welke vatrijping is typisch voor Scotch single malt?", ["Ex-bourbon/ sherry", "Nieuw Amerikaans eiken", "Tequila-vaten", "RVS"], "A"),
+        MCQ("Wat geeft 'peat' smaak aan whisky?", ["Gedroogd veen", "Eiken tannines", "Moutsoort", "Koude filtratie"], "A"),
+    ],
+    "films": [
+        MCQ("Welke term duidt een 'droom in een droom' structuur aan?", ["Droste", "Kuleshov", "Diegesis", "MacGuffin"], "A"),
+        MCQ("Welke beweging associeer je met Hitchcock?", ["Vertigo zoom", "Dutch angle", "Whip pan", "Rack focus"], "A"),
+        MCQ("Wat beschrijft een 'MacGuffin'?", ["Plot-motivator", "Camera-lens", "Soundtrack-term", "Acteertechnique"], "A"),
+    ],
+    "boardgames": [
+        MCQ("Wat is kernmechaniek van deck-builders?", ["Deck tijdens spel opbouwen", "Miniaturen schilderen", "Legacy stickers", "Real-time dobbel"], "A"),
+        MCQ("In *Terraforming Mars*, wat verhoogt je TR het meest?", ["Global parameters", "Kaartcombinaties", "Kaarten kopen", "Mijlpaal first"], "A"),
+        MCQ("Welke resource is niet standaard in *Scythe*?", ["Kruid", "Metaal", "Olie", "Voedsel"], "A"),
+    ],
+    "algemeen": [
+        MCQ("Welke complexiteit heeft Big-O voor binaire zoekopdracht?", ["O(log n)", "O(n)", "O(n log n)", "O(1)"], "A"),
+        MCQ("Wat is de afgeleide van sin(x)?", ["cos(x)", "-sin(x)", "tan(x)", "sec^2(x)"], "A"),
+        MCQ("Welke prime is de kleinste tweecijferige?", ["11", "13", "17", "19"], "A"),
+    ],
+}
