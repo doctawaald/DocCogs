@@ -1,4 +1,4 @@
-# BoozyBank — Economy + BoozyQuiz (3 vragen, 1 poging p/p, cleanup)
+# BoozyBank — Economy + BoozyQuiz (3 vragen, 1 poging p/p, cleanup, anti-dup)
 # by ChatGPT 5 & dOCTAWAALd 🍻👻
 
 import asyncio
@@ -7,7 +7,7 @@ import json
 import random
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 import aiohttp
 import discord
@@ -106,13 +106,14 @@ class BoozyBank(commands.Cog):
             "quiz_channel": None,
             "quiz_autoclean": True,
             "quiz_clean_delay": 5,
-            "test_mode": False,  # als True: TEST_USER_ID mag solo spelen zonder reward
+            "test_mode": False,        # als True: TEST_USER_ID mag solo spelen zonder reward
+            "asked_questions": [],     # persistente anti-dup lijst (laatste 50 vragenstrings)
         }
         self.config.register_user(**default_user)
         self.config.register_guild(**default_guild)
 
         self.quiz_active = False
-        self._recent_questions: List[str] = []
+        self._recent_questions: List[str] = []  # in-memory anti-dup
         self._api_key: Optional[str] = None
         self._auto_task = self.bot.loop.create_task(self._voice_loop())
         self.thema_pool = ["games", "alcohol", "films", "board games", "algemeen"]
@@ -135,10 +136,21 @@ class BoozyBank(commands.Cog):
             reset -= datetime.timedelta(days=1)
         return reset.timestamp()
 
-    def _record_recent(self, q: str) -> None:
+    def _record_recent_mem(self, q: str) -> None:
         self._recent_questions.append(q)
-        if len(self._recent_questions) > 12:
+        if len(self._recent_questions) > 50:
             self._recent_questions.pop(0)
+
+    async def _get_asked_set(self, guild: discord.Guild) -> Set[str]:
+        lst = await self.config.guild(guild).asked_questions()
+        return set(lst or [])
+
+    async def _remember_question(self, guild: discord.Guild, q: str) -> None:
+        async with self.config.guild(guild).asked_questions() as lst:
+            lst.append(q)
+            if len(lst) > 50:
+                # bewaar alleen de laatste 50
+                del lst[:-50]
 
     # ---------- Chat reward ----------
     @commands.Cog.listener()
@@ -188,14 +200,14 @@ class BoozyBank(commands.Cog):
                         if txt:
                             await txt.send(f"🎉 Random drop! {lucky.mention} ontvangt **10 Boo'z**.")
 
-                    # auto-quiz: 1×/nacht, met aanvraag
+                    # auto-quiz: 1×/nacht, met aanvraag, random thema uit 5
                     last_quiz = await self.config.guild(guild).last_quiz()
                     if not last_quiz or last_quiz < reset:
                         quiz_channel_id = await self.config.guild(guild).quiz_channel()
                         channel = guild.get_channel(quiz_channel_id) if quiz_channel_id else None
                         if not channel:
                             continue
-                        thema = random.choice(self.thema_pool)  # altijd random uit 5
+                        thema = random.choice(self.thema_pool)
                         ask = await channel.send(f"📣 **BoozyQuiz™** Zin in een snelle quiz over *{thema}*? Reageer binnen **30s** om te starten!")
                         def check(m: discord.Message) -> bool:
                             return m.channel == channel and not m.author.bot
@@ -250,15 +262,26 @@ class BoozyBank(commands.Cog):
         mcq = random.choice(bank)
         return MCQ(mcq.question, sanitize_options(mcq.options), mcq.answer_letter)
 
-    async def _generate_mcq(self, thema: str, moeilijkheid: str) -> MCQ:
-        mcq = await self._llm_question(thema, moeilijkheid)
-        if not mcq:
-            mcq = self._fallback_question(thema)
+    async def _generate_mcq(self, guild: discord.Guild, thema: str, moeilijkheid: str) -> MCQ:
+        """Genereer vraag met anti-duplicatie tegen in-memory en persistente geschiedenis."""
+        asked_set = await self._get_asked_set(guild)
         tries = 0
-        while mcq.question in self._recent_questions and tries < 5:
-            mcq = self._fallback_question(thema)
+        mcq: Optional[MCQ] = None
+        while tries < 8:
+            candidate = await self._llm_question(thema, moeilijkheid)
+            if not candidate:
+                candidate = self._fallback_question(thema)
+            q = candidate.question.strip()
+            if q not in asked_set and q not in self._recent_questions:
+                mcq = candidate
+                break
             tries += 1
-        self._record_recent(mcq.question)
+        if mcq is None:
+            # laatste redmiddel
+            mcq = self._fallback_question(thema)
+        # onthouden
+        self._record_recent_mem(mcq.question)
+        await self._remember_question(guild, mcq.question)
         return mcq
 
     # ---------- Economy / Shop ----------
@@ -337,156 +360,4 @@ class BoozyBank(commands.Cog):
         async with self.config.guild(ctx.guild).excluded_channels() as exc:
             if ch.id not in exc:
                 exc.append(ch.id)
-        await ctx.send(f"🚫 {ch.mention} uitgesloten van rewards.")
-
-    @commands.command()
-    @checks.admin()
-    async def includechannel(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
-        """Haal kanaal uit de uitsluitlijst (default: dit kanaal)."""
-        ch = channel or ctx.channel
-        async with self.config.guild(ctx.guild).excluded_channels() as exc:
-            if ch.id in exc:
-                exc.remove(ch.id)
-        await ctx.send(f"✅ {ch.mention} doet weer mee voor rewards.")
-
-    @commands.command()
-    async def boozysettings(self, ctx: commands.Context):
-        """Toon huidige BoozyBank-instellingen."""
-        g = await self.config.guild(ctx.guild).all()
-        qch = ctx.guild.get_channel(g["quiz_channel"]) if g["quiz_channel"] else None
-        excluded = [ctx.guild.get_channel(cid) for cid in g["excluded_channels"]]
-        exc_names = ", ".join(ch.mention for ch in excluded if ch) or "_geen_"
-        await ctx.send(
-            f"🛠 **Boozy settings**\n"
-            f"• Quizkanaal: {qch.mention if qch else '_niet ingesteld_'}\n"
-            f"• Excluded: {exc_names}\n"
-            f"• Auto-clean: {'aan' if g.get('quiz_autoclean', True) else 'uit'} "
-            f"(delay {g.get('quiz_clean_delay',5)}s)\n"
-            f"• Testmodus: {'aan' if g.get('test_mode', False) else 'uit'}"
-        )
-
-    @commands.command()
-    @checks.admin()
-    async def boozyclean(self, ctx: commands.Context, status: str):
-        """Zet auto-clean aan/uit. Voorbeeld: !boozyclean on / off"""
-        on = status.lower() in ("on", "aan", "true", "yes", "1")
-        await self.config.guild(ctx.guild).quiz_autoclean.set(on)
-        await ctx.send(f"🧹 Auto-clean staat nu **{'aan' if on else 'uit'}**.")
-
-    @commands.command()
-    @checks.admin()
-    async def boozycleandelay(self, ctx: commands.Context, seconds: int):
-        """Stel vertraging in voor auto-clean (seconden)."""
-        seconds = max(0, min(120, seconds))
-        await self.config.guild(ctx.guild).quiz_clean_delay.set(seconds)
-        await ctx.send(f"⏱️ Auto-clean delay ingesteld op **{seconds}s**.")
-
-    @commands.command()
-    @checks.admin()
-    async def boozytest(self, ctx: commands.Context, status: str):
-        """Zet testmodus aan/uit voor TEST_USER_ID. Voorbeeld: !boozytest on / off"""
-        on = status.lower() in ("on", "aan", "true", "yes", "1")
-        await self.config.guild(ctx.guild).test_mode.set(on)
-        await ctx.send(f"🧪 Testmodus staat nu **{'aan' if on else 'uit'}**.")
-
-    # ---------- Cleanup ----------
-    async def _cleanup_messages(self, channel: discord.TextChannel, to_delete: List[discord.Message]):
-        if not to_delete:
-            return
-        try:
-            bulk = [m for m in to_delete if (discord.utils.utcnow() - m.created_at).days < 14][:100]
-            if len(bulk) == 1:
-                await bulk[0].delete()
-            elif len(bulk) > 1:
-                await channel.delete_messages(bulk)
-        except Exception:
-            for m in to_delete:
-                try:
-                    if (discord.utils.utcnow() - m.created_at).days < 14:
-                        await m.delete()
-                except Exception:
-                    pass
-
-    # ---------- Quiz ----------
-    @commands.command()
-    async def boozyquiz(self, ctx: commands.Context, thema: str = "algemeen", moeilijkheid: str = "medium", vragen: int = 3):
-        """
-        Start direct een BoozyQuiz™ met meerdere vragen (default 3).
-        Vereist 3+ humans in voice, behalve als testmodus=aan en jij TEST_USER_ID bent.
-        """
-        if self.quiz_active:
-            return await ctx.send("⏳ Er is al een quiz bezig.")
-
-        g = await self.config.guild(ctx.guild).all()
-        test_mode = bool(g.get("test_mode", False))
-        allow_bypass = (test_mode and ctx.author.id == TEST_USER_ID)
-
-        vc = ctx.author.voice.channel if ctx.author.voice else None
-        humans = [m for m in (vc.members if vc else []) if not m.bot] if vc else []
-        if not allow_bypass and len(humans) < 3:
-            return await ctx.send("🔇 Je moet met minstens **3** gebruikers in een voice-kanaal zitten om te quizzen.")
-
-        vragen = max(1, min(10, int(vragen)))
-        await self._start_quiz(ctx.channel, thema=thema, moeilijkheid=moeilijkheid, is_test=allow_bypass, count=vragen, include_ask=None)
-
-    @commands.command()
-    @checks.admin()
-    async def boozyquiztest(self, ctx: commands.Context, thema: str = "algemeen", moeilijkheid: str = "medium", vragen: int = 3):
-        """Forceer een testquiz (nooit rewards), handig voor solo testen."""
-        if self.quiz_active:
-            return await ctx.send("⏳ Er is al een quiz bezig.")
-        vragen = max(1, min(10, int(vragen)))
-        await self._start_quiz(ctx.channel, thema=thema, moeilijkheid=moeilijkheid, is_test=True, count=vragen, include_ask=None)
-
-    async def _start_quiz(
-        self,
-        channel: discord.TextChannel,
-        thema: str,
-        moeilijkheid: str,
-        is_test: bool,
-        count: int,
-        include_ask: Optional[discord.Message],
-    ):
-        thema = normalize_theme(thema)
-        self.quiz_active = True
-        all_round_msgs: List[discord.Message] = []
-        all_answer_msgs: List[discord.Message] = []
-        if include_ask:
-            all_round_msgs.append(include_ask)  # ook de "Zin in een quiz?"-aanvraag meewissen
-        scores: Dict[int, int] = {}
-
-        try:
-            for ronde in range(1, count + 1):
-                # vraag genereren
-                async with channel.typing():
-                    mcq = await self._generate_mcq(thema, moeilijkheid)
-
-                header = f"**Ronde {ronde}/{count}**\n"
-                options_str = "\n".join(f"{LETTERS[i]}. {mcq.options[i]}" for i in range(4))
-                qmsg = await channel.send(f"{header}❓ **{mcq.question}**\n*(antwoord met A/B/C/D — 25s)*\n{options_str}")
-                all_round_msgs.append(qmsg)
-
-                end_time = asyncio.get_event_loop().time() + 25
-                winner: Optional[discord.Member] = None
-                attempted: set[int] = set()  # 1 poging per gebruiker
-
-                while True:
-                    timeout = max(0, end_time - asyncio.get_event_loop().time())
-                    if timeout == 0:
-                        break
-
-                    def check(m: discord.Message) -> bool:
-                        return (
-                            m.channel == channel
-                            and not m.author.bot
-                            and m.content.upper().strip() in LETTERS
-                            and m.author.id not in attempted
-                        )
-
-                    try:
-                        msg = await self.bot.wait_for("message", timeout=timeout, check=check)
-                    except asyncio.TimeoutError:
-                        break
-
-                    attempted.add(msg.author.id)
-                    all_answer_msgs.appe
+        await
