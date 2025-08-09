@@ -155,7 +155,7 @@ class QuizMixin:
         count: int,
         include_ask: discord.Message | None,
     ):
-        from .01_utils import letter_index  # local import to avoid cycles
+        from .m01_utils import letter_index  # local import to avoid cycles
         thema = normalize_theme(thema)
         self.quiz_active = True
         all_round_msgs: list[discord.Message] = []
