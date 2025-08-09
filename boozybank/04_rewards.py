@@ -3,7 +3,7 @@ import datetime
 import random
 import discord
 from redbot.core import commands
-from .01_utils import cutoff_ts_at_hour_utc
+from .m01_utils import cutoff_ts_at_hour_utc
 
 class RewardsMixin:
     # ------ Chat rewards ------
