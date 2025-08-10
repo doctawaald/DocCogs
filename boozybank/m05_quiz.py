@@ -12,6 +12,10 @@ from .m01_utils import (
     pick_fallback, cutoff_ts_at_hour_utc, TEST_USER_ID, canonical_question
 )
 
+# ---------------------------
+# BoozyQuiz: batch-based flow
+# ---------------------------
+
 class QuizMixin:
     # ---------- interne helpers ----------
     async def _get_api_key(self) -> str | None:
@@ -28,7 +32,6 @@ class QuizMixin:
             self._recent_questions.pop(0)
 
     async def _get_asked_set(self, guild: discord.Guild) -> set[str]:
-        # canoniseer alles dat uit config komt (voor backwards compat)
         lst = await self.config.guild(guild).asked_questions()
         return {canonical_question(x) for x in (lst or [])}
 
@@ -39,80 +42,119 @@ class QuizMixin:
             if len(lst) > 50:
                 del lst[:-50]
 
-    # ---------- LLM vraag ----------
-    async def _llm_question(self, thema: str, moeilijkheid: str) -> Optional[MCQ]:
+    # ---------- LLM: batch generatie ----------
+    async def _llm_batch_questions(self, thema: str, moeilijkheid: str, want: int = 8) -> List[MCQ]:
         """
-        Vraagt één MCQ aan het LLM. We dwingen thema-respect:
-        - Als de vraag NIET binnen het thema valt, moet het model JSON teruggeven met {"offtopic": true}
-          zodat we kunnen retryen/fallbacken.
+        Vraag in één keer meerdere (want) MCQ's. We eisen thema-conform en JSON array.
+        Items die off-topic of ongeldig zijn, worden genegeerd.
         """
         api_key = await self._get_api_key()
         if not api_key:
-            return None
+            return []
+
         prompt = (
-            "Genereer 1 uitdagende multiple-choice quizvraag ALS JSON. "
-            "Velden: question (string), options (array van exact 4 korte, plausibele opties zonder labels), "
-            "answer (letter A/B/C/D). Lever ALLEEN JSON zonder extra tekst.\n"
+            "Genereer een JSON-array met {want} uitdagende multiple-choice quizvragen. "
+            "Elke entry is een object met velden: "
+            "{question: string, options: [exact 4 korte plausibele opties ZONDER labels], answer: 'A'|'B'|'C'|'D'}. "
+            "Lever *alleen* JSON (geen extra tekst).\n"
             f"Thema: {thema}\nMoeilijkheid: {moeilijkheid} (gevorderd/kennersniveau)\n"
-            "- De vraag MOET aantoonbaar binnen het opgegeven thema vallen.\n"
-            "- Indien je geen themaconforme vraag kunt maken, antwoord dan met exact: "
-            '{"offtopic": true}\n'
+            "- ELKE vraag MOET aantoonbaar binnen het opgegeven thema vallen; "
+            "als je een vraag niet themaconform krijgt, laat die dan weg zodat de array korter kan zijn.\n"
             "- Opties zonder 'A.' of '1)'; enkel de tekst."
-        )
+        ).replace("{want}", str(want))
+
         try:
             async with aiohttp.ClientSession() as sess:
                 payload = {
                     "model": "gpt-5-mini",
                     "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.6,
+                    "temperature": 0.5,
                 }
                 headers = {"Authorization": f"Bearer {api_key}"}
                 async with sess.post(
                     "https://api.openai.com/v1/chat/completions",
                     json=payload,
                     headers=headers,
-                    timeout=30,
+                    timeout=45,
                 ) as r:
                     data = await r.json()
-            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-            m = re.search(r"\{.*\}", content, re.DOTALL)
-            if not m:
-                return None
-            obj = json.loads(m.group())
-            if obj.get("offtopic") is True:
-                return None
-            q = str(obj.get("question", "")).strip()
-            options = sanitize_options(obj.get("options", []))
-            ans = str(obj.get("answer", "")).strip().upper()
-            if not q or len(options) != 4 or ans not in LETTERS:
-                return None
-            return MCQ(q, options, ans)
         except Exception:
-            return None
+            return []
 
-    async def _generate_mcq(self, guild: discord.Guild, thema: str, moeilijkheid: str) -> MCQ:
+        content = (data.get("choices", [{}])[0].get("message", {}) or {}).get("content", "")
+
+        # Probeer een JSON array te extraheren
+        arr_text = None
+        m = re.search(r"\[\s*\{.*\}\s*\]", content, re.DOTALL)
+        if m:
+            arr_text = m.group(0)
+        else:
+            # Sommige modellen geven losstaande objecten onder elkaar; fallback: maak een array van objecten
+            objs = re.findall(r"\{.*?\}", content, re.DOTALL)
+            if objs:
+                arr_text = "[" + ",".join(objs) + "]"
+
+        if not arr_text:
+            return []
+
+        try:
+            raw = json.loads(arr_text)
+            if not isinstance(raw, list):
+                return []
+        except Exception:
+            return []
+
+        out: List[MCQ] = []
+        for item in raw:
+            try:
+                q = str(item.get("question", "")).strip()
+                options = sanitize_options(item.get("options", []))
+                ans = str(item.get("answer", "")).strip().upper()
+                if q and len(options) == 4 and ans in LETTERS:
+                    out.append(MCQ(q, options, ans))
+            except Exception:
+                continue
+
+        return out
+
+    # ---------- Unieke set samenstellen ----------
+    async def _generate_quiz_set(self, guild: discord.Guild, thema: str, moeilijkheid: str, count: int = 5) -> List[MCQ]:
         """
-        - Probeert meerdere keren een LLM-vraag binnen thema.
-        - Anti-dup check gebruikt CANONICAL form; persist + in-memory.
-        - Valt terug op fallback binnen hetzelfde thema.
+        Bouw een set van *count* unieke vragen:
+        1) batch uit LLM
+        2) filter op unique (persist + sessie)
+        3) vul resterende plekken met fallbacks (ook uniek)
         """
-        asked_set = await self._get_asked_set(guild)
-        tries = 0
-        mcq: MCQ | None = None
-        while tries < 8:
-            candidate = await self._llm_question(thema, moeilijkheid)
-            if not candidate:
-                candidate = pick_fallback(thema)
-            cq = canonical_question(candidate.question)
-            if cq not in asked_set and cq not in self._recent_questions:
-                mcq = candidate
+        asked = await self._get_asked_set(guild)
+        session_seen = set()  # canonicals binnen deze quiz
+        unique: List[MCQ] = []
+
+        # 1) LLM batch
+        batch = await self._llm_batch_questions(thema, moeilijkheid, want=max(8, count + 3))
+        for mcq in batch:
+            cq = canonical_question(mcq.question)
+            if cq in asked or cq in self._recent_questions or cq in session_seen:
+                continue
+            unique.append(mcq)
+            session_seen.add(cq)
+            if len(unique) >= count:
                 break
-            tries += 1
-        if mcq is None:
-            mcq = pick_fallback(thema)
-        self._record_recent_mem(mcq.question)
-        await self._remember_question(guild, mcq.question)
-        return mcq
+
+        # 2) Fallbacks indien nodig
+        while len(unique) < count:
+            f = pick_fallback(thema)
+            cq = canonical_question(f.question)
+            if cq in asked or cq in self._recent_questions or cq in session_seen:
+                continue
+            unique.append(f)
+            session_seen.add(cq)
+
+        # 3) Onthouden (persist + recent), zodat vervolgrondes ook beschermd zijn
+        for mcq in unique:
+            self._record_recent_mem(mcq.question)
+            await self._remember_question(guild, mcq.question)
+
+        return unique
 
     # ---------- Cleanup ----------
     async def _cleanup_messages(self, channel: discord.TextChannel, to_delete: List[discord.Message]):
@@ -136,7 +178,7 @@ class QuizMixin:
     @commands.command()
     async def boozyquiz(self, ctx: commands.Context, thema: str = "algemeen", moeilijkheid: str = "hard"):
         """
-        Start direct een BoozyQuiz™ met **5 vragen**.
+        Start direct een BoozyQuiz™ met **5 vragen** (batch gegenereerd → minder dubbels).
         Vereist 3+ humans in voice, behalve als testmodus=aan en jij TEST_USER_ID bent.
         Reward alleen aan eindwinnaar(s); daily limit per persoon uit settings.
         """
@@ -181,10 +223,11 @@ class QuizMixin:
         scores: Dict[int, int] = {}
 
         try:
-            for ronde in range(1, count + 1):
-                async with channel.typing():
-                    mcq = await self._generate_mcq(channel.guild, thema, moeilijkheid)
+            # ---- GENEREER VOORAF 5 UNIEKE VRAGEN ----
+            async with channel.typing():
+                questions = await self._generate_quiz_set(channel.guild, thema, moeilijkheid, count=count)
 
+            for ronde, mcq in enumerate(questions, start=1):
                 header = f"**Ronde {ronde}/{count}**\n"
                 options_str = "\n".join(f"{LETTERS[i]}. {mcq.options[i]}" for i in range(4))
                 qmsg = await channel.send(f"{header}❓ **{mcq.question}**\n*(antwoord met A/B/C/D — 25s)*\n{options_str}")
