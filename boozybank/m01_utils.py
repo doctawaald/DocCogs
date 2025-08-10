@@ -1,7 +1,7 @@
 import re
 import random
 import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import List, Dict
 
 TEST_USER_ID = 489127123446005780  # jouw test ID
@@ -52,6 +52,20 @@ def cutoff_ts_at_hour_utc(hour: int) -> float:
         target -= datetime.timedelta(days=1)
     return target.timestamp()
 
+_CANON_RE = re.compile(r"[^\w]+", re.UNICODE)
+
+def canonical_question(text: str) -> str:
+    """
+    Canonicaliseer vraag voor anti-dup:
+    - lowercased
+    - niet-alfanumeriek -> spaties
+    - samengevoegde whitespace gestript
+    """
+    t = str(text or "").lower()
+    t = _CANON_RE.sub(" ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
 # Een iets pittigere fallback-bank (per thema)
 FALLBACK_BANK: Dict[str, List[MCQ]] = {
     "games": [
@@ -77,8 +91,6 @@ FALLBACK_BANK: Dict[str, List[MCQ]] = {
 }
 
 def pick_fallback(thema: str) -> MCQ:
-    from dataclasses import replace
     bank = FALLBACK_BANK.get(normalize_theme(thema)) or FALLBACK_BANK["algemeen"]
     mcq = random.choice(bank)
-    # return a copy to avoid mutation side-effects
     return replace(mcq, options=sanitize_options(mcq.options))
