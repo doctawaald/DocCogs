@@ -1,4 +1,4 @@
-# [01] UTILS — helpers, canonicalization, fallbacks
+# [01] UTILS — helpers, canonicalization, fallbacks (licht makkelijk)
 
 import re
 import random
@@ -19,9 +19,7 @@ def letter_index(letter: str) -> int:
     return {"A": 0, "B": 1, "C": 2, "D": 3}[letter.upper()]
 
 OPTION_PREFIX_RE = re.compile(
-    r"""^\s*(
-        [A-Da-d] | \d{1,2}
-    )\s*[\.\)\:\-]\s*""",
+    r"""^\s*([A-Da-d]|\d{1,2})\s*[\.\)\:\-]\s*""",
     re.VERBOSE,
 )
 
@@ -41,8 +39,12 @@ def normalize_theme(thema: str) -> str:
     t = (thema or "").lower().strip()
     mapping = {
         "board games": "boardgames", "board-game": "boardgames", "boardgames": "boardgames",
-        "games": "games", "alcohol": "alcohol", "films": "films", "movies": "films",
+        "games": "games",
+        "alcohol": "alcohol",
+        "films": "films", "movies": "films",
         "algemeen": "algemeen", "general": "algemeen",
+        "electronics": "electronics", "electronica": "electronics", "elektronica": "electronics",
+        "controllers": "electronics", "gamecontrollers": "electronics",
     }
     return mapping.get(t, t or "algemeen")
 
@@ -54,49 +56,55 @@ def cutoff_ts_at_hour_utc(hour: int) -> float:
     return target.timestamp()
 
 _CANON_RE = re.compile(r"[^\w]+", re.UNICODE)
-
 def canonical_question(text: str) -> str:
     t = str(text or "").lower()
     t = _CANON_RE.sub(" ", t)
     t = re.sub(r"\s+", " ", t).strip()
     return t
 
-# grotere fallback-bank
+# ---- EASY-ish fallback bank (licht makkelijk) ----
 FALLBACK_BANK: Dict[str, List[MCQ]] = {
     "games": [
-        MCQ("Welke engine draait *Half-Life 2*?", ["Source", "id Tech 3", "Unreal 2", "GoldSrc"], "A"),
-        MCQ("Welke *Dark Souls* stat verhoogt Equip Load?", ["Vitality", "Endurance", "Strength", "Dexterity"], "A"),
-        MCQ("Welke studio maakte *Hades*?", ["Supergiant Games", "Larian Studios", "Arkane", "Supercell"], "A"),
-        MCQ("In *Portal*, hoe heet de AI tegenstander?", ["GLaDOS", "SHODAN", "AM", "EDI"], "A"),
-        MCQ("Welke reeks introduceerde de 'V.A.T.S.' mechanic?", ["Fallout", "Borderlands", "Deus Ex", "Bioshock"], "A"),
+        MCQ("Welk bedrijf maakt de PlayStation?", ["Sony", "Microsoft", "Nintendo", "Valve"], "A"),
+        MCQ("Welke Nintendo-held draagt een groene pet?", ["Luigi", "Mario", "Link", "Yoshi"], "A"),
+        MCQ("Wat verzamel je in *Minecraft* om tools te maken?", ["Hout", "Munten", "Mana", "Tickets"], "A"),
+        MCQ("In welke serie komt Master Chief voor?", ["Halo", "Gears of War", "Doom", "Mass Effect"], "A"),
+        MCQ("Welke knop springt meestal op een Xbox-controller?", ["A", "B", "X", "Y"], "A"),
     ],
     "alcohol": [
-        MCQ("Welke graansoort domineert in bourbon?", ["Maïs", "Rogge", "Tarwe", "Gerst"], "A"),
-        MCQ("Calvados is een brandewijn van…", ["Peren", "Appels", "Druiven", "Kersen"], "B"),
-        MCQ("Waar komt de 'Islay' whiskystijl vandaan?", ["Schotland", "Ierland", "VS", "Japan"], "A"),
-        MCQ("Welke cocktail gebruikt Campari?", ["Negroni", "Old Fashioned", "Martini", "Margarita"], "A"),
-        MCQ("Wat is de minimale ABV voor EU-vodka?", ["37.5%", "40%", "35%", "30%"], "A"),
+        MCQ("Welk hoofdingrediënt heeft bier?", ["Gerst", "Aardappelen", "Rijst", "Maïs"], "A"),
+        MCQ("Wat is de basisalcohol in een Mojito?", ["Rum", "Gin", "Wodka", "Tequila"], "A"),
+        MCQ("Welke drank is typisch blauw?", ["Blue Curaçao", "Vermout", "Port", "Amaretto"], "A"),
+        MCQ("Wat is een alcoholvrije cocktail?", ["Mocktail", "Short", "Neat", "On the rocks"], "A"),
+        MCQ("Welke wijn is rood?", ["Merlot", "Sauvignon Blanc", "Pinot Grigio", "Prosecco"], "A"),
     ],
     "films": [
-        MCQ("Welke editor werkte vaak met Scorsese?", ["Thelma Schoonmaker", "Walter Murch", "Lee Smith", "Sally Menke"], "A"),
-        MCQ("Welke film wordt geassocieerd met de Kuleshov-montage?", ["Man with a Movie Camera", "Battleship Potemkin", "Strike", "October"], "B"),
-        MCQ("Wie regisseerde *Stalker* (1979)?", ["Andrei Tarkovsky", "Sergei Eisenstein", "Kieslowski", "Bergman"], "A"),
-        MCQ("Welke term duidt een object dat het plot drijft aan?", ["MacGuffin", "Deus ex machina", "Chekhov's gun", "Montage"], "A"),
-        MCQ("Wie componeerde vaak voor Christopher Nolan?", ["Hans Zimmer", "John Williams", "Max Richter", "Thomas Newman"], "A"),
+        MCQ("Wie speelde Jack in *Titanic*?", ["Leonardo DiCaprio", "Brad Pitt", "Keanu Reeves", "Tom Cruise"], "A"),
+        MCQ("Welke serie hoort bij lightsabers?", ["Star Wars", "Star Trek", "Blade Runner", "Alien"], "A"),
+        MCQ("Wie regisseerde *Jurassic Park*?", ["Steven Spielberg", "James Cameron", "Ridley Scott", "Peter Jackson"], "A"),
+        MCQ("Wie is de clown in *It*?", ["Pennywise", "Joker", "Chucky", "Ghostface"], "A"),
+        MCQ("Welke film gaat over een tovenaarsschool?", ["Harry Potter", "Twilight", "Dune", "Matrix"], "A"),
     ],
     "boardgames": [
-        MCQ("Designer van *Agricola*?", ["Uwe Rosenberg", "Reiner Knizia", "Vlada Chvátil", "Isaac Childres"], "A"),
-        MCQ("In *Twilight Struggle* staat DEFCON initieel op…", ["3", "2", "4", "5"], "D"),
-        MCQ("Welke mechaniek hoort bij *Dominion*?", ["Deckbuilding", "Tile laying", "Trick-taking", "Dexterity"], "A"),
-        MCQ("In *Catan*, hoeveel punten is een langste handelsroute?", ["2", "3", "4", "5"], "A"),
-        MCQ("Welke uitgever bracht *Gloomhaven* uit?", ["Cephalofair Games", "Asmadi", "Portal", "CGP"], "A"),
+        MCQ("In *Catan* ruil je vooral…", ["Grondstoffen", "Munten", "Kaarten met vragen", "Dobbelstenen"], "A"),
+        MCQ("Waarmee beweeg je in *Monopoly*?", ["Dobbelstenen", "Kaarten", "Fiches", "Zandlopers"], "A"),
+        MCQ("Bij *Uno* win je door…", ["Je laatste kaart te spelen", "Geld te sparen", "Het bord te vullen", "De koning te slaan"], "A"),
+        MCQ("Welke kleur heeft de start in *Mens-erger-je-niet*?", ["Rood", "Paars", "Zwart", "Goud"], "A"),
+        MCQ("Schaken: hoe heet de sterkste stuk?", ["Dame", "Toren", "Loper", "Koning"], "A"),
+    ],
+    "electronics": [
+        MCQ("Welke pool van een batterij is aangeduid met een plus?", ["Positief", "Negatief", "Aarde", "Signaal"], "A"),
+        MCQ("Welke eenheid meet spanning?", ["Volt", "Ampère", "Ohm", "Watt"], "A"),
+        MCQ("Wat doet een weerstand?", ["Beperkt stroom", "Versterkt signaal", "Slaat energie op", "Maakt licht"], "A"),
+        MCQ("Welke kleur is vaak massa/aarde in DC-kabels?", ["Zwart", "Rood", "Geel", "Blauw"], "A"),
+        MCQ("Welke component geeft licht als er stroom loopt?", ["LED", "Spoel", "Diodebrug", "Relais"], "A"),
     ],
     "algemeen": [
-        MCQ("Element met atoomnummer 74?", ["Wolfram", "Rhenium", "Iridium", "Osmium"], "A"),
-        MCQ("Welke wiskundige introduceerde de lambda-calculus?", ["Alonzo Church", "Alan Turing", "Kurt Gödel", "John von Neumann"], "A"),
-        MCQ("Wat is O-notatie voor binaire zoekopdracht?", ["O(log n)", "O(n)", "O(n^2)", "O(1)"], "A"),
-        MCQ("Kleinste tweecijferige priemgetal?", ["11", "13", "17", "19"], "A"),
-        MCQ("Afgeleide van sin(x)?", ["cos(x)", "-sin(x)", "tan(x)", "sec^2(x)"], "A"),
+        MCQ("Hoeveel minuten zitten er in een uur?", ["60", "30", "90", "120"], "A"),
+        MCQ("Welk dier miauwt?", ["Kat", "Hond", "Koe", "Vogel"], "A"),
+        MCQ("Welke kleur krijg je door blauw + geel?", ["Groen", "Paars", "Oranje", "Bruin"], "A"),
+        MCQ("Wat gebruik je om te bellen?", ["Telefoon", "Printer", "Router", "Muis"], "A"),
+        MCQ("Welke maand komt na juni?", ["Juli", "Mei", "Augustus", "September"], "A"),
     ],
 }
 
