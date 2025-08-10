@@ -1,3 +1,5 @@
+# [04] REWARDS — chat/voice rewards + random drop + auto-quiz
+
 import asyncio
 import datetime
 import random
@@ -6,7 +8,7 @@ from redbot.core import commands
 from .m01_utils import cutoff_ts_at_hour_utc
 
 class RewardsMixin:
-    # ------ Chat rewards ------
+    # chat rewards
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.guild:
@@ -23,7 +25,7 @@ class RewardsMixin:
             await self.config.user(message.author).booz.set(bal + amount)
             await self.config.user(message.author).last_chat.set(now)
 
-    # ------ Voice loop: voice rewards + random drop + auto-quiz ------
+    # voice loop
     async def _voice_loop(self):
         await self.bot.wait_until_ready()
         while not self.bot.is_closed():
@@ -31,7 +33,7 @@ class RewardsMixin:
                 for guild in self.bot.guilds:
                     g = await self.config.guild(guild).all()
 
-                    # Voice rewards: loop alle VC's
+                    # voice rewards
                     interval = int(g.get("voice_reward_interval_sec", 300))
                     v_amount = int(g.get("voice_reward_amount", 1))
                     now_ts = datetime.datetime.utcnow().timestamp()
@@ -46,7 +48,7 @@ class RewardsMixin:
                                 bal = await self.config.user(user).booz()
                                 await self.config.user(user).booz.set(bal + v_amount)
 
-                    # Drukste VC bepalen voor de rest
+                    # drukste VC
                     busiest = None
                     humans_count = 0
                     for vc in guild.voice_channels:
@@ -61,7 +63,7 @@ class RewardsMixin:
                     cutoff = cutoff_ts_at_hour_utc(hour)
                     now_ts = datetime.datetime.utcnow().timestamp()
 
-                    # Random drop 1×/dag
+                    # random drop 1×/dag
                     last_drop = g.get("last_drop", 0.0)
                     if not last_drop or last_drop < cutoff:
                         lucky = random.choice([m for m in busiest.members if not m.bot])
@@ -80,7 +82,7 @@ class RewardsMixin:
                             except Exception:
                                 pass
 
-                    # Auto-quiz 1×/dag (met opt-in bericht)
+                    # auto-quiz 1×/dag
                     last_quiz = g.get("last_quiz", 0.0)
                     if not last_quiz or last_quiz < cutoff:
                         quiz_channel_id = g.get("quiz_channel")
@@ -94,17 +96,22 @@ class RewardsMixin:
                             )
                         except Exception:
                             ask = None
+
                         def check(m: discord.Message) -> bool:
                             return m.channel == channel and not m.author.bot
                         try:
                             await self.bot.wait_for("message", timeout=30, check=check)
                         except asyncio.TimeoutError:
                             if ask:
-                                try: await ask.delete()
-                                except Exception: pass
+                                try:
+                                    await ask.delete()
+                                except Exception:
+                                    pass
                         else:
                             await self.config.guild(guild).last_quiz.set(now_ts)
-                            await self._start_quiz(channel, thema=thema, moeilijkheid="hard", is_test=False, count=5, include_ask=ask)
+                            # include_ask: we willen dit bericht straks opruimen
+                            await self._start_quiz(channel, thema=thema, moeilijkheid="hard",
+                                                   is_test=False, count=5, include_ask=ask, initial_msgs=None)
             except Exception as e:
                 print(f"[BoozyBank voice loop] {e}")
             await asyncio.sleep(60)
