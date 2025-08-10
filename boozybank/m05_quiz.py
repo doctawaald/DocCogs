@@ -5,11 +5,11 @@ import asyncio
 import datetime
 import discord
 from typing import Optional, Dict, List
-from redbot.core import commands
+from redbot.core import commands, checks
 
 from .m01_utils import (
     MCQ, LETTERS, letter_index, sanitize_options, normalize_theme,
-    pick_fallback, cutoff_ts_at_hour_utc, TEST_USER_ID
+    pick_fallback, cutoff_ts_at_hour_utc, TEST_USER_ID, canonical_question
 )
 
 class QuizMixin:
@@ -22,31 +22,41 @@ class QuizMixin:
         return self._api_key
 
     def _record_recent_mem(self, q: str) -> None:
-        self._recent_questions.append(q)
+        cq = canonical_question(q)
+        self._recent_questions.append(cq)
         if len(self._recent_questions) > 50:
             self._recent_questions.pop(0)
 
     async def _get_asked_set(self, guild: discord.Guild) -> set[str]:
+        # canoniseer alles dat uit config komt (voor backwards compat)
         lst = await self.config.guild(guild).asked_questions()
-        return set(lst or [])
+        return {canonical_question(x) for x in (lst or [])}
 
     async def _remember_question(self, guild: discord.Guild, q: str) -> None:
+        cq = canonical_question(q)
         async with self.config.guild(guild).asked_questions() as lst:
-            lst.append(q)
+            lst.append(cq)
             if len(lst) > 50:
                 del lst[:-50]
 
     # ---------- LLM vraag ----------
     async def _llm_question(self, thema: str, moeilijkheid: str) -> Optional[MCQ]:
+        """
+        Vraagt één MCQ aan het LLM. We dwingen thema-respect:
+        - Als de vraag NIET binnen het thema valt, moet het model JSON teruggeven met {"offtopic": true}
+          zodat we kunnen retryen/fallbacken.
+        """
         api_key = await self._get_api_key()
         if not api_key:
             return None
         prompt = (
-            "Genereer 1 uitdagende multiple-choice quizvraag als JSON. "
+            "Genereer 1 uitdagende multiple-choice quizvraag ALS JSON. "
             "Velden: question (string), options (array van exact 4 korte, plausibele opties zonder labels), "
-            "answer (letter A/B/C/D). Lever alleen JSON zonder extra tekst.\n"
-            f"Thema: {thema}\nMoeilijkheid: {moeilijkheid} (richt op gevorderd/kennersniveau)\n"
-            "- Maak het niet triviaal; kies geloofwaardige maar incorrecte foute opties.\n"
+            "answer (letter A/B/C/D). Lever ALLEEN JSON zonder extra tekst.\n"
+            f"Thema: {thema}\nMoeilijkheid: {moeilijkheid} (gevorderd/kennersniveau)\n"
+            "- De vraag MOET aantoonbaar binnen het opgegeven thema vallen.\n"
+            "- Indien je geen themaconforme vraag kunt maken, antwoord dan met exact: "
+            '{"offtopic": true}\n'
             "- Opties zonder 'A.' of '1)'; enkel de tekst."
         )
         try:
@@ -69,6 +79,8 @@ class QuizMixin:
             if not m:
                 return None
             obj = json.loads(m.group())
+            if obj.get("offtopic") is True:
+                return None
             q = str(obj.get("question", "")).strip()
             options = sanitize_options(obj.get("options", []))
             ans = str(obj.get("answer", "")).strip().upper()
@@ -79,6 +91,11 @@ class QuizMixin:
             return None
 
     async def _generate_mcq(self, guild: discord.Guild, thema: str, moeilijkheid: str) -> MCQ:
+        """
+        - Probeert meerdere keren een LLM-vraag binnen thema.
+        - Anti-dup check gebruikt CANONICAL form; persist + in-memory.
+        - Valt terug op fallback binnen hetzelfde thema.
+        """
         asked_set = await self._get_asked_set(guild)
         tries = 0
         mcq: MCQ | None = None
@@ -86,8 +103,8 @@ class QuizMixin:
             candidate = await self._llm_question(thema, moeilijkheid)
             if not candidate:
                 candidate = pick_fallback(thema)
-            q = candidate.question.strip()
-            if q not in asked_set and q not in self._recent_questions:
+            cq = canonical_question(candidate.question)
+            if cq not in asked_set and cq not in self._recent_questions:
                 mcq = candidate
                 break
             tries += 1
@@ -138,7 +155,7 @@ class QuizMixin:
         await self._start_quiz(ctx.channel, thema=thema, moeilijkheid=moeilijkheid, is_test=allow_bypass, count=5, include_ask=None)
 
     @commands.command()
-    @commands.admin_or_permissions(manage_guild=True)
+    @checks.admin()
     async def boozyquiztest(self, ctx: commands.Context, thema: str = "algemeen", moeilijkheid: str = "hard"):
         """Forceer een testquiz (altijd zonder rewards), handig voor solo testen."""
         if self.quiz_active:
@@ -155,7 +172,6 @@ class QuizMixin:
         count: int,
         include_ask: discord.Message | None,
     ):
-        from .m01_utils import letter_index  # local import to avoid cycles
         thema = normalize_theme(thema)
         self.quiz_active = True
         all_round_msgs: list[discord.Message] = []
