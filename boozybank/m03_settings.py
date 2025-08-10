@@ -1,8 +1,10 @@
+# [03] SETTINGS — kanaal/exclusions + reward config + toggles
+
 import discord
 from redbot.core import checks, commands
 
 class SettingsMixin:
-    # ----- Kanaal & exclusions -----
+    # [01] Kanaal & exclusions
     @commands.command()
     @checks.admin()
     async def setquizchannel(self, ctx: commands.Context, channel: discord.TextChannel | None = None):
@@ -31,7 +33,7 @@ class SettingsMixin:
                 exc.remove(ch.id)
         await ctx.send(f"✅ {ch.mention} doet weer mee voor rewards.")
 
-    # ----- Reward config -----
+    # [02] Reward config
     @commands.command()
     @checks.admin()
     async def setchatreward(self, ctx: commands.Context, amount: int, cooldown_sec: int):
@@ -77,31 +79,32 @@ class SettingsMixin:
         await self.config.guild(ctx.guild).quiz_daily_limit.set(max(0, limit))
         await ctx.send(f"🚦 Quiz daily limit: **{max(0, limit)}**")
 
-    # ----- Overige toggles & status -----
+    # [03] LLM settings
     @commands.command()
     @checks.admin()
-    async def boozyclean(self, ctx: commands.Context, status: str):
-        """Zet auto-clean aan/uit. Voorbeeld: !boozyclean on/off"""
+    async def setllmmodel(self, ctx: commands.Context, *, model: str):
+        """Stel het LLM-model in (bv. gpt-5-nano)."""
+        await self.config.guild(ctx.guild).llm_model.set(model.strip())
+        await ctx.send(f"🧠 LLM-model gezet op `{model.strip()}`")
+
+    @commands.command()
+    @checks.admin()
+    async def setllmtimeout(self, ctx: commands.Context, seconds: int):
+        """Stel de LLM-timeout (seconden) in."""
+        s = max(5, min(120, int(seconds)))
+        await self.config.guild(ctx.guild).llm_timeout.set(s)
+        await ctx.send(f"⏱️ LLM-timeout ingesteld op **{s}s**")
+
+    # [04] Debug toggle
+    @commands.command()
+    @checks.admin()
+    async def boozydebug(self, ctx: commands.Context, status: str):
+        """Zet quiz debug aan/uit (toont generatie-stats). Voorbeeld: !boozydebug on/off"""
         on = status.lower() in ("on", "aan", "true", "yes", "1")
-        await self.config.guild(ctx.guild).quiz_autoclean.set(on)
-        await ctx.send(f"🧹 Auto-clean staat nu **{'aan' if on else 'uit'}**.")
+        await self.config.guild(ctx.guild).debug_quiz.set(on)
+        await ctx.send(f"🔍 Debug is **{'aan' if on else 'uit'}**.")
 
-    @commands.command()
-    @checks.admin()
-    async def boozycleandelay(self, ctx: commands.Context, seconds: int):
-        """Stel vertraging in voor auto-clean (seconden)."""
-        s = max(0, min(120, seconds))
-        await self.config.guild(ctx.guild).quiz_clean_delay.set(s)
-        await ctx.send(f"⏱️ Auto-clean delay ingesteld op **{s}s**.")
-
-    @commands.command()
-    @checks.admin()
-    async def boozytest(self, ctx: commands.Context, status: str):
-        """Zet testmodus aan/uit (TEST_USER_ID mag solo spelen, zonder rewards)."""
-        on = status.lower() in ("on", "aan", "true", "yes", "1")
-        await self.config.guild(ctx.guild).test_mode.set(on)
-        await ctx.send(f"🧪 Testmodus staat nu **{'aan' if on else 'uit'}**.")
-
+    # [05] Overzicht
     @commands.command()
     async def boozysettings(self, ctx: commands.Context):
         """Toon huidige BoozyBank-instellingen."""
@@ -117,11 +120,13 @@ class SettingsMixin:
                 f"• Excluded: {exc_names}",
                 f"• Auto-clean: {'aan' if g.get('quiz_autoclean', True) else 'uit'} (delay {g.get('quiz_clean_delay',5)}s)",
                 f"• Testmodus: {'aan' if g.get('test_mode', False) else 'uit'}",
+                f"• Debug: {'aan' if g.get('debug_quiz', False) else 'uit'}",
                 f"• Anti-dup history: {asked_len} vragen",
                 "• **Rewards**:",
                 f"   - Chat: +{g.get('chat_reward_amount',1)} / {g.get('chat_reward_cooldown_sec',300)}s",
                 f"   - Voice: +{g.get('voice_reward_amount',1)} / {g.get('voice_reward_interval_sec',300)}s",
                 f"   - Random drop: +{g.get('random_drop_amount',10)} per dag",
                 f"   - Quiz eindreward: +{g.get('quiz_reward_amount',50)} | reset-uur (UTC): {g.get('quiz_reward_reset_hour',4)} | daily limit: {g.get('quiz_daily_limit',5)}",
+                f"• LLM: model `{g.get('llm_model','gpt-5-nano')}`, timeout {g.get('llm_timeout',45)}s",
             ])
         )
