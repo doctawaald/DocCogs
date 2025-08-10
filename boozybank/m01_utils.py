@@ -1,3 +1,5 @@
+# [01] UTILS — helpers, canonicalization, fallbacks
+
 import re
 import random
 import datetime
@@ -45,7 +47,6 @@ def normalize_theme(thema: str) -> str:
     return mapping.get(t, t or "algemeen")
 
 def cutoff_ts_at_hour_utc(hour: int) -> float:
-    """Timestamp van vandaag op <hour>:00:00 UTC; als nu vóór dat uur is, pak gisteren."""
     now = datetime.datetime.utcnow()
     target = now.replace(hour=hour % 24, minute=0, second=0, microsecond=0)
     if now < target:
@@ -55,17 +56,12 @@ def cutoff_ts_at_hour_utc(hour: int) -> float:
 _CANON_RE = re.compile(r"[^\w]+", re.UNICODE)
 
 def canonical_question(text: str) -> str:
-    """
-    Canonicaliseer vraag voor anti-dup:
-    - lowercased
-    - niet-alfanumeriek -> spaties
-    - samengevoegde whitespace gestript
-    """
     t = str(text or "").lower()
     t = _CANON_RE.sub(" ", t)
     t = re.sub(r"\s+", " ", t).strip()
     return t
 
+# grotere fallback-bank
 FALLBACK_BANK: Dict[str, List[MCQ]] = {
     "games": [
         MCQ("Welke engine draait *Half-Life 2*?", ["Source", "id Tech 3", "Unreal 2", "GoldSrc"], "A"),
