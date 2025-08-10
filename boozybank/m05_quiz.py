@@ -1,10 +1,12 @@
+# [05] QUIZ — batch MCQ generatie, uniek-filter, cleanup, debug
+
 import re
 import json
 import aiohttp
 import asyncio
 import datetime
 import discord
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 from redbot.core import commands, checks
 
 from .m01_utils import (
@@ -12,12 +14,8 @@ from .m01_utils import (
     pick_fallback, cutoff_ts_at_hour_utc, TEST_USER_ID, canonical_question
 )
 
-# ---------------------------
-# BoozyQuiz: batch-based flow
-# ---------------------------
-
 class QuizMixin:
-    # ---------- interne helpers ----------
+    # [01] API helpers
     async def _get_api_key(self) -> str | None:
         if getattr(self, "_api_key", None):
             return self._api_key
@@ -42,54 +40,53 @@ class QuizMixin:
             if len(lst) > 50:
                 del lst[:-50]
 
-    # ---------- LLM: batch generatie ----------
-    async def _llm_batch_questions(self, thema: str, moeilijkheid: str, want: int = 8) -> List[MCQ]:
-        """
-        Vraag in één keer meerdere (want) MCQ's. We eisen thema-conform en JSON array.
-        Items die off-topic of ongeldig zijn, worden genegeerd.
-        """
+    # [02] LLM batch
+    async def _llm_batch_questions(self, *, thema: str, moeilijkheid: str, want: int, model: str, timeout: int) -> List[MCQ]:
         api_key = await self._get_api_key()
         if not api_key:
             return []
 
         prompt = (
             "Genereer een JSON-array met {want} uitdagende multiple-choice quizvragen. "
-            "Elke entry is een object met velden: "
-            "{question: string, options: [exact 4 korte plausibele opties ZONDER labels], answer: 'A'|'B'|'C'|'D'}. "
-            "Lever *alleen* JSON (geen extra tekst).\n"
+            "Elke entry: {question: string, options: [exact 4 korte opties ZONDER labels], answer: 'A'|'B'|'C'|'D'}. "
+            "Lever *alleen* JSON.\n"
             f"Thema: {thema}\nMoeilijkheid: {moeilijkheid} (gevorderd/kennersniveau)\n"
-            "- ELKE vraag MOET aantoonbaar binnen het opgegeven thema vallen; "
-            "als je een vraag niet themaconform krijgt, laat die dan weg zodat de array korter kan zijn.\n"
-            "- Opties zonder 'A.' of '1)'; enkel de tekst."
+            "ELKE vraag MOET binnen het thema vallen; laat off-topic items weg."
         ).replace("{want}", str(want))
 
         try:
             async with aiohttp.ClientSession() as sess:
                 payload = {
-                    "model": "gpt-5-nano",
+                    "model": model,
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.5,
                 }
-                headers = {"Authorization": f"Bearer {api_key}"}
                 async with sess.post(
                     "https://api.openai.com/v1/chat/completions",
                     json=payload,
-                    headers=headers,
-                    timeout=45,
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    timeout=timeout,
                 ) as r:
+                    status = r.status
                     data = await r.json()
-        except Exception:
+        except Exception as e:
+            print(f"[BoozyBank] LLM network error: {e}")
+            return []
+
+        if status != 200:
+            print(f"[BoozyBank] LLM HTTP {status}: {data}")
             return []
 
         content = (data.get("choices", [{}])[0].get("message", {}) or {}).get("content", "")
 
-        # Probeer een JSON array te extraheren
         arr_text = None
         m = re.search(r"\[\s*\{.*\}\s*\]", content, re.DOTALL)
         if m:
             arr_text = m.group(0)
         else:
-            # Sommige modellen geven losstaande objecten onder elkaar; fallback: maak een array van objecten
             objs = re.findall(r"\{.*?\}", content, re.DOTALL)
             if objs:
                 arr_text = "[" + ",".join(objs) + "]"
@@ -117,30 +114,35 @@ class QuizMixin:
 
         return out
 
-    # ---------- Unieke set samenstellen ----------
-    async def _generate_quiz_set(self, guild: discord.Guild, thema: str, moeilijkheid: str, count: int = 5) -> List[MCQ]:
-        """
-        Bouw een set van *count* unieke vragen:
-        1) batch uit LLM
-        2) filter op unique (persist + sessie)
-        3) vul resterende plekken met fallbacks (ook uniek)
-        """
+    # [03] Quizset generator
+    async def _generate_quiz_set(self, guild: discord.Guild, thema: str, moeilijkheid: str, *, count: int,
+                                 model: str, timeout: int) -> Tuple[List[MCQ], Dict[str, int | bool]]:
         asked = await self._get_asked_set(guild)
-        session_seen = set()  # canonicals binnen deze quiz
+        session_seen = set()
         unique: List[MCQ] = []
+        stats: Dict[str, int | bool] = {
+            "llm_parsed": 0,
+            "chosen_from_llm": 0,
+            "chosen_fallbacks": 0,
+            "duplicates_dropped": 0,
+            "degraded": False,
+        }
 
-        # 1) LLM batch
-        batch = await self._llm_batch_questions(thema, moeilijkheid, want=max(8, count + 3))
+        batch = await self._llm_batch_questions(thema=thema, moeilijkheid=moeilijkheid, want=max(8, count + 3),
+                                                model=model, timeout=timeout)
+        stats["llm_parsed"] = len(batch)
+
         for mcq in batch:
             cq = canonical_question(mcq.question)
             if cq in asked or cq in self._recent_questions or cq in session_seen:
+                stats["duplicates_dropped"] += 1
                 continue
             unique.append(mcq)
             session_seen.add(cq)
+            stats["chosen_from_llm"] += 1
             if len(unique) >= count:
                 break
 
-                # 2) Fallbacks indien nodig
         tries = 0
         while len(unique) < count and tries < 100:
             f = pick_fallback(thema)
@@ -150,27 +152,21 @@ class QuizMixin:
                 continue
             unique.append(f)
             session_seen.add(cq)
+            stats["chosen_fallbacks"] += 1
 
-        # Als we hier nog steeds te weinig unieke vragen hebben, degradeer netjes
         if len(unique) < count:
-            # Voeg (tijdelijk) duplicates toe om te voorkomen dat we vastlopen
             need = count - len(unique)
             pool = [pick_fallback(thema) for _ in range(need)]
             unique.extend(pool[:need])
+            stats["degraded"] = True
 
-        # 3) Onthouden (persist + recent), zodat vervolgrondes ook beschermd zijn
         for mcq in unique:
             self._record_recent_mem(mcq.question)
             await self._remember_question(guild, mcq.question)
 
-        # Check of we minder dan 'count' unieke vragen hebben
-        if len({canonical_question(q.question) for q in unique}) < count:
-            # Wordt straks in _start_quiz als waarschuwing getoond
-            pass
+        return unique, stats
 
-        return unique
-
-    # ---------- Cleanup ----------
+    # [04] Cleanup helper
     async def _cleanup_messages(self, channel: discord.TextChannel, to_delete: List[discord.Message]):
         if not to_delete:
             return
@@ -188,17 +184,12 @@ class QuizMixin:
                 except Exception:
                     pass
 
-    # ---------- Commands ----------
+    # [05] Commands
     @commands.command()
     async def boozyquiz(self, ctx: commands.Context, thema: str = "algemeen", moeilijkheid: str = "hard"):
-        """
-        Start direct een BoozyQuiz™ met **5 vragen** (batch gegenereerd → minder dubbels).
-        Vereist 3+ humans in voice, behalve als testmodus=aan en jij TEST_USER_ID bent.
-        Reward alleen aan eindwinnaar(s); daily limit per persoon uit settings.
-        """
+        """Start een BoozyQuiz™ met 5 vragen (batch, uniek-filter, eindreward)."""
         if self.quiz_active:
             return await ctx.send("⏳ Er is al een quiz bezig.")
-
         g = await self.config.guild(ctx.guild).all()
         test_mode = bool(g.get("test_mode", False))
         allow_bypass = (test_mode and ctx.author.id == TEST_USER_ID)
@@ -208,7 +199,9 @@ class QuizMixin:
         if not allow_bypass and len(humans) < 3:
             return await ctx.send("🔇 Je moet met minstens **3** gebruikers in een voice-kanaal zitten om te quizzen.")
 
-        await self._start_quiz(ctx.channel, thema=thema, moeilijkheid=moeilijkheid, is_test=allow_bypass, count=5, include_ask=None)
+        initial = [ctx.message]  # ook je aanvraag straks opruimen
+        await self._start_quiz(ctx.channel, thema=thema, moeilijkheid=moeilijkheid,
+                               is_test=allow_bypass, count=5, include_ask=None, initial_msgs=initial)
 
     @commands.command()
     @checks.admin()
@@ -216,9 +209,11 @@ class QuizMixin:
         """Forceer een testquiz (altijd zonder rewards), handig voor solo testen."""
         if self.quiz_active:
             return await ctx.send("⏳ Er is al een quiz bezig.")
-        await self._start_quiz(ctx.channel, thema=thema, moeilijkheid=moeilijkheid, is_test=True, count=5, include_ask=None)
+        initial = [ctx.message]
+        await self._start_quiz(ctx.channel, thema=thema, moeilijkheid=moeilijkheid,
+                               is_test=True, count=5, include_ask=None, initial_msgs=initial)
 
-    # ---------- Core quiz flow ----------
+    # [06] Core flow
     async def _start_quiz(
         self,
         channel: discord.TextChannel,
@@ -227,28 +222,45 @@ class QuizMixin:
         is_test: bool,
         count: int,
         include_ask: discord.Message | None,
+        initial_msgs: List[discord.Message] | None,
     ):
         thema = normalize_theme(thema)
         self.quiz_active = True
         all_round_msgs: list[discord.Message] = []
         all_answer_msgs: list[discord.Message] = []
         if include_ask:
-            all_round_msgs.append(include_ask)  # aanvraag meewissen
+            all_round_msgs.append(include_ask)
+        if initial_msgs:
+            all_round_msgs.extend(initial_msgs)
+
         scores: Dict[int, int] = {}
 
         try:
-            # ---- GENEREER VOORAF 5 UNIEKE VRAGEN ----
+            g = await self.config.guild(channel.guild).all()
+            model = g.get("llm_model", "gpt-5-nano")
+            timeout = int(g.get("llm_timeout", 45))
+            debug = bool(g.get("debug_quiz", False))
+
             async with channel.typing():
-                questions = await self._generate_quiz_set(channel.guild, thema, moeilijkheid, count=count)
-            try:
-                uniq = {canonical_question(q.question) for q in questions}
-                if len(uniq) < len(questions):
-                    await channel.send(
-                        "⚠️ Kon niet genoeg **unieke** vragen vinden binnen dit thema. "
-                        "Er zijn tijdelijk een paar herhalingen toegevoegd om de quiz te kunnen starten."
-                    )
-            except Exception:
-                pass
+                questions, stats = await self._generate_quiz_set(
+                    channel.guild, thema, moeilijkheid, count=count, model=model, timeout=timeout
+                )
+
+            if stats.get("degraded"):
+                warn = await channel.send(
+                    "⚠️ Kon niet genoeg **unieke** vragen vinden binnen dit thema. "
+                    "Er zijn tijdelijk een paar herhalingen toegevoegd om de quiz te kunnen starten."
+                )
+                all_round_msgs.append(warn)
+
+            if debug:
+                dbg = await channel.send(
+                    f"🔍 Gen-stats — model `{model}`: "
+                    f"LLM parsed: {stats['llm_parsed']}, gekozen uit LLM: {stats['chosen_from_llm']}, "
+                    f"fallbacks: {stats['chosen_fallbacks']}, dupes gedropt: {stats['duplicates_dropped']}, "
+                    f"degraded: {stats['degraded']}"
+                )
+                all_round_msgs.append(dbg)
 
             for ronde, mcq in enumerate(questions, start=1):
                 header = f"**Ronde {ronde}/{count}**\n"
@@ -258,11 +270,11 @@ class QuizMixin:
 
                 end_time = asyncio.get_event_loop().time() + 25
                 winner = None
-                attempted: set[int] = set()  # 1 poging per gebruiker
+                attempted: set[int] = set()
 
                 while True:
-                    timeout = max(0, end_time - asyncio.get_event_loop().time())
-                    if timeout == 0:
+                    timeout_left = max(0, end_time - asyncio.get_event_loop().time())
+                    if timeout_left == 0:
                         break
 
                     def check(m: discord.Message) -> bool:
@@ -274,7 +286,7 @@ class QuizMixin:
                         )
 
                     try:
-                        msg = await self.bot.wait_for("message", timeout=timeout, check=check)
+                        msg = await self.bot.wait_for("message", timeout=timeout_left, check=check)
                     except asyncio.TimeoutError:
                         break
 
@@ -289,7 +301,6 @@ class QuizMixin:
                             await msg.add_reaction("❌")
                         except Exception:
                             pass
-                        continue
 
                 if winner:
                     scores[winner.id] = scores.get(winner.id, 0) + 1
@@ -298,7 +309,7 @@ class QuizMixin:
                     ct = mcq.options[letter_index(mcq.answer_letter)]
                     all_round_msgs.append(await channel.send(f"⌛ Tijd! Antwoord: **{mcq.answer_letter}** — {ct}"))
 
-            # ---- Eindwinnaar(s) & rewards (alleen nu) ----
+            # eindstand + eindreward
             if scores:
                 g = await self.config.guild(channel.guild).all()
                 excluded = g.get("excluded_channels", [])
@@ -330,16 +341,13 @@ class QuizMixin:
                         if not member:
                             continue
                         u = await self.config.user(member).all()
-                        # reset teller indien over cutoff heen
                         if u.get("quiz_reward_reset_ts", 0.0) < cutoff:
                             await self.config.user(member).quiz_rewards_today.set(0)
                             await self.config.user(member).quiz_reward_reset_ts.set(datetime.datetime.utcnow().timestamp())
                             u["quiz_rewards_today"] = 0
-                        # limit check
                         if u.get("quiz_rewards_today", 0) >= limit:
                             reward_notes.append(f"{member.display_name}: daglimiet bereikt (geen reward)")
                             continue
-                        # uitbetalen
                         bal = u.get("booz", 0)
                         await self.config.user(member).booz.set(bal + reward_amt)
                         await self.config.user(member).quiz_rewards_today.set(u.get("quiz_rewards_today", 0) + 1)
