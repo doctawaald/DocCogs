@@ -59,7 +59,7 @@ class QuizMixin:
                 payload = {
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.5,
+                    "temperature": 1,
                 }
                 async with sess.post(
                     "https://api.openai.com/v1/chat/completions",
