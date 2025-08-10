@@ -66,7 +66,7 @@ class QuizMixin:
         try:
             async with aiohttp.ClientSession() as sess:
                 payload = {
-                    "model": "gpt-5-mini",
+                    "model": "gpt-5-nano",
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.5,
                 }
@@ -140,19 +140,33 @@ class QuizMixin:
             if len(unique) >= count:
                 break
 
-        # 2) Fallbacks indien nodig
-        while len(unique) < count:
+                # 2) Fallbacks indien nodig
+        tries = 0
+        while len(unique) < count and tries < 100:
             f = pick_fallback(thema)
             cq = canonical_question(f.question)
+            tries += 1
             if cq in asked or cq in self._recent_questions or cq in session_seen:
                 continue
             unique.append(f)
             session_seen.add(cq)
 
+        # Als we hier nog steeds te weinig unieke vragen hebben, degradeer netjes
+        if len(unique) < count:
+            # Voeg (tijdelijk) duplicates toe om te voorkomen dat we vastlopen
+            need = count - len(unique)
+            pool = [pick_fallback(thema) for _ in range(need)]
+            unique.extend(pool[:need])
+
         # 3) Onthouden (persist + recent), zodat vervolgrondes ook beschermd zijn
         for mcq in unique:
             self._record_recent_mem(mcq.question)
             await self._remember_question(guild, mcq.question)
+
+        # Check of we minder dan 'count' unieke vragen hebben
+        if len({canonical_question(q.question) for q in unique}) < count:
+            # Wordt straks in _start_quiz als waarschuwing getoond
+            pass
 
         return unique
 
@@ -226,6 +240,15 @@ class QuizMixin:
             # ---- GENEREER VOORAF 5 UNIEKE VRAGEN ----
             async with channel.typing():
                 questions = await self._generate_quiz_set(channel.guild, thema, moeilijkheid, count=count)
+            try:
+                uniq = {canonical_question(q.question) for q in questions}
+                if len(uniq) < len(questions):
+                    await channel.send(
+                        "⚠️ Kon niet genoeg **unieke** vragen vinden binnen dit thema. "
+                        "Er zijn tijdelijk een paar herhalingen toegevoegd om de quiz te kunnen starten."
+                    )
+            except Exception:
+                pass
 
             for ronde, mcq in enumerate(questions, start=1):
                 header = f"**Ronde {ronde}/{count}**\n"
