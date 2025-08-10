@@ -1,3 +1,5 @@
+# [02] ECONOMY — saldo, geef, shop, leaderboard
+
 import discord
 from redbot.core import commands
 
