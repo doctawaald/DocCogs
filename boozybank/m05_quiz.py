@@ -1,4 +1,4 @@
-# [05] QUIZ — batch MCQ generatie, uniek-filter, cleanup, debug
+# [05] QUIZ — batch MCQ generatie, uniek-filter, difficulty, stop, cleanup, debug
 
 import re
 import json
@@ -13,6 +13,19 @@ from .m01_utils import (
     MCQ, LETTERS, letter_index, sanitize_options, normalize_theme,
     pick_fallback, cutoff_ts_at_hour_utc, TEST_USER_ID, canonical_question
 )
+
+# een kleine jargonlijst om 'easy' vragen te filteren (licht, niet babymakkelijk)
+EASY_JARGON = {
+    "slew rate","bode","fourier","miller-effect","kircHhoff","superpositie",
+    "transferfunctie","impedantie-matching","resonantiepiek","q-factor",
+    "schmitt trigger","differentiator","integrator","phase margin","gain-bandwidth",
+}
+
+def looks_too_hard_for_easy(text: str) -> bool:
+    t = re.sub(r"\s+", " ", str(text or "")).lower()
+    if len(t) > 160:
+        return True
+    return any(k in t for k in EASY_JARGON)
 
 class QuizMixin:
     # [01] API helpers
@@ -41,17 +54,27 @@ class QuizMixin:
                 del lst[:-50]
 
     # [02] LLM batch
-    async def _llm_batch_questions(self, *, thema: str, moeilijkheid: str, want: int, model: str, timeout: int) -> List[MCQ]:
+    async def _llm_batch_questions(self, *, guild: discord.Guild, thema: str, moeilijkheid: str,
+                                   want: int, model: str, timeout: int) -> List[MCQ]:
         api_key = await self._get_api_key()
         if not api_key:
             return []
 
+        # difficulty instructie
+        if (moeilijkheid or "").lower() == "easy":
+            diff_line = ("Maak de vragen **licht makkelijk** (beginnersniveau), "
+                         "vermíjd vakjargon en extreem technische termen. "
+                         "Maximaal ~18 woorden per vraag. ")
+        else:
+            diff_line = "Maak de vragen uitdagend maar eerlijk. "
+
         prompt = (
-            "Genereer een JSON-array met {want} uitdagende multiple-choice quizvragen. "
+            "Genereer een JSON-array met {want} multiple-choice quizvragen. "
             "Elke entry: {question: string, options: [exact 4 korte opties ZONDER labels], answer: 'A'|'B'|'C'|'D'}. "
             "Lever *alleen* JSON.\n"
-            f"Thema: {thema}\nMoeilijkheid: {moeilijkheid} (gevorderd/kennersniveau)\n"
-            "ELKE vraag MOET binnen het thema vallen; laat off-topic items weg."
+            f"Thema: {thema}\n"
+            f"{diff_line}"
+            "Alle vragen MOETEN binnen het thema vallen."
         ).replace("{want}", str(want))
 
         try:
@@ -59,7 +82,7 @@ class QuizMixin:
                 payload = {
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 1,
+                    # geen temperature → Nano default (1)
                 }
                 async with sess.post(
                     "https://api.openai.com/v1/chat/completions",
@@ -81,7 +104,6 @@ class QuizMixin:
             return []
 
         content = (data.get("choices", [{}])[0].get("message", {}) or {}).get("content", "")
-
         arr_text = None
         m = re.search(r"\[\s*\{.*\}\s*\]", content, re.DOTALL)
         if m:
@@ -90,7 +112,6 @@ class QuizMixin:
             objs = re.findall(r"\{.*?\}", content, re.DOTALL)
             if objs:
                 arr_text = "[" + ",".join(objs) + "]"
-
         if not arr_text:
             return []
 
@@ -102,21 +123,25 @@ class QuizMixin:
             return []
 
         out: List[MCQ] = []
+        easy_mode = (moeilijkheid or "").lower() == "easy"
         for item in raw:
             try:
                 q = str(item.get("question", "")).strip()
                 options = sanitize_options(item.get("options", []))
                 ans = str(item.get("answer", "")).strip().upper()
-                if q and len(options) == 4 and ans in LETTERS:
-                    out.append(MCQ(q, options, ans))
+                if not (q and len(options) == 4 and ans in LETTERS):
+                    continue
+                if easy_mode and looks_too_hard_for_easy(q):
+                    continue
+                out.append(MCQ(q, options, ans))
             except Exception:
                 continue
-
         return out
 
     # [03] Quizset generator
-    async def _generate_quiz_set(self, guild: discord.Guild, thema: str, moeilijkheid: str, *, count: int,
-                                 model: str, timeout: int) -> Tuple[List[MCQ], Dict[str, int | bool]]:
+    async def _generate_quiz_set(self, channel: discord.TextChannel, thema: str, moeilijkheid: str, *,
+                                 count: int, model: str, timeout: int) -> Tuple[List[MCQ], Dict[str, int | bool]]:
+        guild = channel.guild
         asked = await self._get_asked_set(guild)
         session_seen = set()
         unique: List[MCQ] = []
@@ -128,8 +153,10 @@ class QuizMixin:
             "degraded": False,
         }
 
-        batch = await self._llm_batch_questions(thema=thema, moeilijkheid=moeilijkheid, want=max(8, count + 3),
-                                                model=model, timeout=timeout)
+        batch = await self._llm_batch_questions(
+            guild=guild, thema=thema, moeilijkheid=moeilijkheid,
+            want=max(8, count + 3), model=model, timeout=timeout
+        )
         stats["llm_parsed"] = len(batch)
 
         for mcq in batch:
@@ -143,6 +170,7 @@ class QuizMixin:
             if len(unique) >= count:
                 break
 
+        # fallbacks (met cap, geen spin)
         tries = 0
         while len(unique) < count and tries < 100:
             f = pick_fallback(thema)
@@ -163,6 +191,10 @@ class QuizMixin:
         for mcq in unique:
             self._record_recent_mem(mcq.question)
             await self._remember_question(guild, mcq.question)
+
+        # debug naar console:
+        print(f"[BoozyBank] gen: parsed={stats['llm_parsed']} chosen_llm={stats['chosen_from_llm']} "
+              f"fallbacks={stats['chosen_fallbacks']} dupes={stats['duplicates_dropped']} degraded={stats['degraded']}")
 
         return unique, stats
 
@@ -186,8 +218,8 @@ class QuizMixin:
 
     # [05] Commands
     @commands.command()
-    async def boozyquiz(self, ctx: commands.Context, thema: str = "algemeen", moeilijkheid: str = "hard"):
-        """Start een BoozyQuiz™ met 5 vragen (batch, uniek-filter, eindreward)."""
+    async def boozyquiz(self, ctx: commands.Context, thema: str = "algemeen", moeilijkheid: str = "easy"):
+        """Start een BoozyQuiz™ met 5 vragen (batch, uniek-filter, difficulty, eindreward)."""
         if self.quiz_active:
             return await ctx.send("⏳ Er is al een quiz bezig.")
         g = await self.config.guild(ctx.guild).all()
@@ -203,10 +235,19 @@ class QuizMixin:
         await self._start_quiz(ctx.channel, thema=thema, moeilijkheid=moeilijkheid,
                                is_test=allow_bypass, count=5, include_ask=None, initial_msgs=initial)
 
+    @commands.command(aliases=["boozystop"])
+    async def boozyquit(self, ctx: commands.Context):
+        """Stop de huidige quiz meteen (geen rewards)."""
+        if not self.quiz_active:
+            return await ctx.send("😶 Er is geen actieve quiz.")
+        self.quiz_cancelled = True
+        await ctx.send("⏹️ Quiz gestopt.")
+        # de cleanup gebeurt in de quiz-loop
+
     @commands.command()
     @checks.admin()
-    async def boozyquiztest(self, ctx: commands.Context, thema: str = "algemeen", moeilijkheid: str = "hard"):
-        """Forceer een testquiz (altijd zonder rewards), handig voor solo testen."""
+    async def boozyquiztest(self, ctx: commands.Context, thema: str = "algemeen", moeilijkheid: str = "easy"):
+        """Forceer een testquiz (altijd zonder rewards). Ook je startbericht wordt opgeruimd."""
         if self.quiz_active:
             return await ctx.send("⏳ Er is al een quiz bezig.")
         initial = [ctx.message]
@@ -226,6 +267,7 @@ class QuizMixin:
     ):
         thema = normalize_theme(thema)
         self.quiz_active = True
+        self.quiz_cancelled = False
         all_round_msgs: list[discord.Message] = []
         all_answer_msgs: list[discord.Message] = []
         if include_ask:
@@ -243,7 +285,7 @@ class QuizMixin:
 
             async with channel.typing():
                 questions, stats = await self._generate_quiz_set(
-                    channel.guild, thema, moeilijkheid, count=count, model=model, timeout=timeout
+                    channel, thema, moeilijkheid, count=count, model=model, timeout=timeout
                 )
 
             if stats.get("degraded"):
@@ -263,6 +305,9 @@ class QuizMixin:
                 all_round_msgs.append(dbg)
 
             for ronde, mcq in enumerate(questions, start=1):
+                if self.quiz_cancelled:
+                    break
+
                 header = f"**Ronde {ronde}/{count}**\n"
                 options_str = "\n".join(f"{LETTERS[i]}. {mcq.options[i]}" for i in range(4))
                 qmsg = await channel.send(f"{header}❓ **{mcq.question}**\n*(antwoord met A/B/C/D — 25s)*\n{options_str}")
@@ -273,6 +318,8 @@ class QuizMixin:
                 attempted: set[int] = set()
 
                 while True:
+                    if self.quiz_cancelled:
+                        break
                     timeout_left = max(0, end_time - asyncio.get_event_loop().time())
                     if timeout_left == 0:
                         break
@@ -284,7 +331,6 @@ class QuizMixin:
                             and m.content.upper().strip() in LETTERS
                             and m.author.id not in attempted
                         )
-
                     try:
                         msg = await self.bot.wait_for("message", timeout=timeout_left, check=check)
                     except asyncio.TimeoutError:
@@ -302,6 +348,9 @@ class QuizMixin:
                         except Exception:
                             pass
 
+                if self.quiz_cancelled:
+                    break
+
                 if winner:
                     scores[winner.id] = scores.get(winner.id, 0) + 1
                     all_round_msgs.append(await channel.send(f"✅ {winner.mention} pakt deze ronde!"))
@@ -309,8 +358,8 @@ class QuizMixin:
                     ct = mcq.options[letter_index(mcq.answer_letter)]
                     all_round_msgs.append(await channel.send(f"⌛ Tijd! Antwoord: **{mcq.answer_letter}** — {ct}"))
 
-            # eindstand + eindreward
-            if scores:
+            # eindstand & eindreward (alleen als niet afgebroken en er scores zijn)
+            if not self.quiz_cancelled and scores:
                 g = await self.config.guild(channel.guild).all()
                 excluded = g.get("excluded_channels", [])
                 reward_amt = int(g.get("quiz_reward_amount", 50))
@@ -356,8 +405,8 @@ class QuizMixin:
                 if reward_notes:
                     summary.append("💰 Rewards: " + "; ".join(reward_notes))
                 all_round_msgs.append(await channel.send("\n".join(summary)))
-            else:
-                all_round_msgs.append(await channel.send("🏁 **Eindstand**: _geen goede antwoorden dit keer._"))
+            elif self.quiz_cancelled:
+                all_round_msgs.append(await channel.send("🛑 Quiz beëindigd."))
 
         finally:
             self.quiz_active = False
