@@ -163,7 +163,7 @@ class RewardsMixin:
                         except asyncio.TimeoutError:
                             started = False
 
-                        # ruim het vraagbericht op (maakt niet uit of autoclean aan staat; dit is pre-quiz)
+                        # ruim het vraagbericht op (pre-quiz)
                         if ask:
                             try:
                                 await ask.delete()
@@ -180,8 +180,8 @@ class RewardsMixin:
                                     moeilijkheid="easy",
                                     is_test=False,
                                     count=5,
-                                    include_ask=None,      # ask is al verwijderd
-                                    initial_msgs=None,     # geen extra initial
+                                    include_ask=None,
+                                    initial_msgs=None,
                                 )
                             except Exception as e:
                                 print(f"[BoozyBank voice loop] auto-quiz start error: {e}")
