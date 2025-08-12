@@ -1,4 +1,4 @@
-# [03] SETTINGS — kanaal/exclusions + reward/interval config + LLM + shopbeheer
+# [03] SETTINGS — kanalen/exclusions + rewards/interval + LLM + shop + systeem-toggles
 
 import discord
 from redbot.core import checks, commands
@@ -48,12 +48,12 @@ class SettingsMixin:
         """Stel voice reward in: !setvoicereward <amount> <interval_sec>"""
         await self.config.guild(ctx.guild).voice_reward_amount.set(max(0, amount))
         await self.config.guild(ctx.guild).voice_reward_interval_sec.set(max(0, interval_sec))
-        await ctx.send(f"🎙️ Voice: +{max(0,amount)} per {max(0,interval_sec)}s (AFK kanaal uitgesloten)")
+        await ctx.send(f"🎙️ Voice: +{max(0,amount)} per {max(0,interval_sec)}s")
 
     @commands.command()
     @checks.admin()
     async def setrandomdrop(self, ctx: commands.Context, amount: int):
-        """Stel random drop in: !setrandomdrop <amount> (1× per dag bij drukste VC, min. 3 humans)"""
+        """Stel random drop in: !setrandomdrop <amount> (1× per dag bij drukste VC)"""
         await self.config.guild(ctx.guild).random_drop_amount.set(max(0, amount))
         await ctx.send(f"🎁 Random drop: +{max(0,amount)} Boo'z per dag")
 
@@ -78,6 +78,55 @@ class SettingsMixin:
         hour = min(23, max(0, int(hour_utc)))
         await self.config.guild(ctx.guild).quiz_reward_reset_hour.set(hour)
         await ctx.send(f"⏰ Reset-uur gezet op {hour}:00 UTC")
+
+    # ---------- Systeem toggles ----------
+    @commands.command()
+    @checks.admin()
+    async def setautoclean(self, ctx: commands.Context, status: str):
+        """Zet quiz auto-clean aan/uit: !setautoclean on/off"""
+        on = status.lower() in ("on", "aan", "true", "yes", "1")
+        await self.config.guild(ctx.guild).quiz_autoclean.set(on)
+        await ctx.send(f"🧹 Auto-clean is **{'aan' if on else 'uit'}**.")
+
+    @commands.command()
+    @checks.admin()
+    async def setcleandelay(self, ctx: commands.Context, seconds: int):
+        """Stel cleanup delay in seconden: !setcleandelay <s>"""
+        s = max(0, int(seconds))
+        await self.config.guild(ctx.guild).quiz_clean_delay.set(s)
+        await ctx.send(f"⏳ Cleanup delay: **{s}s**")
+
+    @commands.command()
+    @checks.admin()
+    async def setminvc(self, ctx: commands.Context, n: int):
+        """Minimum #humans in VC voor rewards/quiz/drop: !setminvc <n>"""
+        n = max(0, int(n))
+        await self.config.guild(ctx.guild).min_vc_humans.set(n)
+        await ctx.send(f"👥 Min. VC-humans: **{n}**")
+
+    @commands.command()
+    @checks.admin()
+    async def setautoquiz(self, ctx: commands.Context, status: str):
+        """Zet auto-quiz (dagelijks) aan/uit: !setautoquiz on/off"""
+        on = status.lower() in ("on", "aan", "true", "yes", "1")
+        await self.config.guild(ctx.guild).auto_quiz_enabled.set(on)
+        await ctx.send(f"🤖 Auto-quiz is **{'aan' if on else 'uit'}**.")
+
+    @commands.command()
+    @checks.admin()
+    async def setafkignore(self, ctx: commands.Context, status: str):
+        """Negeer AFK-kanaal voor VC-dingen: !setafkignore on/off"""
+        on = status.lower() in ("on", "aan", "true", "yes", "1")
+        await self.config.guild(ctx.guild).afk_excluded.set(on)
+        await ctx.send(f"😴 AFK-kanaal negeren: **{'aan' if on else 'uit'}**")
+
+    @commands.command()
+    @checks.admin()
+    async def setselfmuteignore(self, ctx: commands.Context, status: str):
+        """Sluit self-mute/deaf users uit voor voice-rewards: !setselfmuteignore on/off"""
+        on = status.lower() in ("on", "aan", "true", "yes", "1")
+        await self.config.guild(ctx.guild).self_mute_excluded.set(on)
+        await ctx.send(f"🔇 Self-mute/deaf uitsluiten: **{'aan' if on else 'uit'}**")
 
     # ---------- LLM settings ----------
     @commands.command()
@@ -163,11 +212,15 @@ class SettingsMixin:
                 f"• Quizkanaal: {qch.mention if qch else '_niet ingesteld_'}",
                 f"• Excluded: {exc_names}",
                 f"• Auto-clean: {'aan' if g.get('quiz_autoclean', True) else 'uit'} (delay {g.get('quiz_clean_delay',5)}s)",
+                f"• Min. VC-humans: {g.get('min_vc_humans',3)}",
+                f"• Auto-quiz: {'aan' if g.get('auto_quiz_enabled', True) else 'uit'}",
+                f"• AFK negeren: {'aan' if g.get('afk_excluded', True) else 'uit'}",
+                f"• Self-mute/deaf uitsluiten: {'aan' if g.get('self_mute_excluded', False) else 'uit'}",
                 f"• Debug: {'aan' if g.get('debug_quiz', False) else 'uit'}",
                 "• **Rewards**:",
                 f"   - Chat: +{g.get('chat_reward_amount',1)} / {g.get('chat_reward_cooldown_sec',300)}s",
                 f"   - Voice: +{g.get('voice_reward_amount',1)} / {g.get('voice_reward_interval_sec',300)}s",
-                f"   - Random drop: +{g.get('random_drop_amount',10)} per dag (drukste VC, min 3 humans, AFK uitgesloten)",
+                f"   - Random drop: +{g.get('random_drop_amount',10)} per dag",
                 f"   - Quiz eindreward: +{g.get('quiz_reward_amount',50)} | reset-uur (UTC): {g.get('quiz_reward_reset_hour',4)} | daily limit: {g.get('quiz_daily_limit',5)}",
                 f"• LLM: model `{g.get('llm_model','gpt-5-nano')}`, timeout {g.get('llm_timeout',45)}s",
                 "• **Shop**:",
