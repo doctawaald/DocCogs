@@ -131,7 +131,7 @@ class SettingsMixin:
     @commands.command()
     @checks.admin()
     async def settestmode(self, ctx: commands.Context, status: str):
-        """Zet testmodus (bypass VC-minimum voor jouw test-ID, zonder rewards): !settestmode on/off"""
+        """Zet testmodus (bypass VC-minimum voor vaste test-ID, zonder rewards): !settestmode on/off"""
         on = status.lower() in ("on", "aan", "true", "yes", "1")
         await self.config.guild(ctx.guild).test_mode.set(on)
         await ctx.send(f"🧪 Testmodus is **{'aan' if on else 'uit'}**.")
@@ -214,28 +214,36 @@ class SettingsMixin:
         qch = ctx.guild.get_channel(g.get("quiz_channel")) if g.get("quiz_channel") else None
         excluded = [ctx.guild.get_channel(cid) for cid in g.get("excluded_channels", [])]
         exc_names = ", ".join(ch.mention for ch in excluded if ch) or "_geen_"
-        await ctx.send(
-            "\n".join([
-                "🛠 **Boozy settings**",
-                f"• Quizkanaal: {qch.mention if qch else '_niet ingesteld_'}",
-                f"• Excluded: {exc_names}",
-                f"• Auto-clean: {'aan' if g.get('quiz_autoclean', True) else 'uit'} (delay {g.get('quiz_clean_delay',5)}s)",
-                f"• Min. VC-humans: {g.get('min_vc_humans',3)}",
-                f"• Auto-quiz: {'aan' if g.get('auto_quiz_enabled', True) else 'uit'}",
-                f"• AFK negeren: {'aan' if g.get('afk_excluded', True) else 'uit'}",
-                f"• Self-mute/deaf uitsluiten: {'aan' if g.get('self_mute_excluded', False) else 'uit'}",
-                f"• Debug: {'aan' if g.get('debug_quiz', False) else 'uit'}",
-                f"• Testmodus: {'aan' if g.get('test_mode', False) else 'uit'}",
-                "• **Rewards**:",
-                f"   - Chat: +{g.get('chat_reward_amount',1)} / {g.get('chat_reward_cooldown_sec',300)}s",
-                f"   - Voice: +{g.get('voice_reward_amount',1)} / {g.get('voice_reward_interval_sec',300)}s",
-                f"   - Random drop: +{g.get('random_drop_amount',10)} per dag",
-                f"   - Quiz eindreward: +{g.get('quiz_reward_amount',50)} | reset-uur (UTC): {g.get('quiz_reward_reset_hour',4)} | daily limit: {g.get('quiz_daily_limit',5)}",
-                f"• LLM: model `{g.get('llm_model','gpt-5-nano')}`, timeout {g.get('llm_timeout',45)}s",
-                "• **Shop**:",
-                *[
-                    f"   - {k}: prijs {v.get('price',0)} | rol_id {v.get('role_id')}"
-                    for k, v in (g.get('shop', {}) or {}).items()
-                ] or ["   - _leeg_"],
-            ])
-        )
+
+        # Bouw shop-regels zonder *unpacking + or
+        raw_shop = (g.get("shop", {}) or {})
+        if raw_shop:
+            shop_lines = [
+                f"   - {k}: prijs {v.get('price',0)} | rol_id {v.get('role_id')}"
+                for k, v in raw_shop.items()
+            ]
+        else:
+            shop_lines = ["   - _leeg_"]
+
+        lines = [
+            "🛠 **Boozy settings**",
+            f"• Quizkanaal: {qch.mention if qch else '_niet ingesteld_'}",
+            f"• Excluded: {exc_names}",
+            f"• Auto-clean: {'aan' if g.get('quiz_autoclean', True) else 'uit'} (delay {g.get('quiz_clean_delay',5)}s)",
+            f"• Min. VC-humans: {g.get('min_vc_humans',3)}",
+            f"• Auto-quiz: {'aan' if g.get('auto_quiz_enabled', True) else 'uit'}",
+            f"• AFK negeren: {'aan' if g.get('afk_excluded', True) else 'uit'}",
+            f"• Self-mute/deaf uitsluiten: {'aan' if g.get('self_mute_excluded', False) else 'uit'}",
+            f"• Debug: {'aan' if g.get('debug_quiz', False) else 'uit'}",
+            f"• Testmodus: {'aan' if g.get('test_mode', False) else 'uit'}",
+            "• **Rewards**:",
+            f"   - Chat: +{g.get('chat_reward_amount',1)} / {g.get('chat_reward_cooldown_sec',300)}s",
+            f"   - Voice: +{g.get('voice_reward_amount',1)} / {g.get('voice_reward_interval_sec',300)}s",
+            f"   - Random drop: +{g.get('random_drop_amount',10)} per dag",
+            f"   - Quiz eindreward: +{g.get('quiz_reward_amount',50)} | reset-uur (UTC): {g.get('quiz_reward_reset_hour',4)} | daily limit: {g.get('quiz_daily_limit',5)}",
+            f"• LLM: model `{g.get('llm_model','gpt-5-nano')}`, timeout {g.get('llm_timeout',45)}s",
+            "• **Shop**:",
+        ]
+        lines.extend(shop_lines)
+
+        await ctx.send("\n".join(lines))
