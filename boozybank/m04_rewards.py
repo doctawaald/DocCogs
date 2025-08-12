@@ -48,6 +48,10 @@ class RewardsMixin:
             try:
                 for guild in self.bot.guilds:
                     g = await self.config.guild(guild).all()
+                    afk_excl = bool(g.get("afk_excluded", True))
+                    selfmute_excl = bool(g.get("self_mute_excluded", False))
+                    min_humans = int(g.get("min_vc_humans", 3))
+                    auto_quiz_enabled = bool(g.get("auto_quiz_enabled", True))
 
                     # ----------------
                     # Voice rewards
@@ -76,15 +80,17 @@ class RewardsMixin:
                     busiest = None
                     humans_count = 0
                     for vc in guild.voice_channels:
-                        # AFK-kanaal uitsluiten
-                        if guild.afk_channel and vc.id == guild.afk_channel.id:
+                        if afk_excl and guild.afk_channel and vc.id == guild.afk_channel.id:
                             continue
                         humans = [m for m in vc.members if not m.bot]
+                        if selfmute_excl:
+                            humans = [m for m in humans if not (m.voice and (m.voice.self_mute or m.voice.self_deaf))]
                         if len(humans) > humans_count:
                             busiest, humans_count = vc, len(humans)
 
+
                     # Geen drukke VC → niks doen
-                    if not busiest or humans_count < 3:
+                    if not busiest or humans_count < min_humans:
                         continue
 
                     # Bereken daggrens (reset)
