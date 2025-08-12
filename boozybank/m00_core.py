@@ -78,6 +78,11 @@ class BoozyBank(RewardsMixin, QuizMixin, EconomyMixin, SettingsMixin, DoctorMixi
             "quiz_autoclean": True,
             "quiz_clean_delay": 5,
 
+            "min_vc_humans": 3,
+            "auto_quiz_enabled": True,
+            "afk_excluded": True,
+            "self_mute_excluded": False,
+
             # Toggles
             "test_mode": False,
             "debug_quiz": False,
