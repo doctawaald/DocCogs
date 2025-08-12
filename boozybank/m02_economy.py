@@ -1,4 +1,4 @@
-# [02] ECONOMY — saldo, leaderboard, give, shop en redeem (rol-koppeling voor extern soundboard)
+# [02] ECONOMY — saldo, leaderboard, give, shop en redeem (rol-koppeling extern soundboard)
 
 import discord
 from redbot.core import commands, checks
@@ -84,7 +84,7 @@ class EconomyMixin:
         role_id = shop[key].get("role_id")
         role = ctx.guild.get_role(int(role_id)) if role_id else None
 
-        # Dubbelkoop-guard: als er een rol is gekoppeld en je hebt die al, weiger aankoop
+        # Dubbelkoop-guard
         if role and role in ctx.author.roles:
             return await ctx.send(f"ℹ️ Je hebt **{role.name}** al; aankoop niet nodig.")
 
@@ -106,10 +106,8 @@ class EconomyMixin:
                 await self._set_balance(ctx.author, cur + price)
                 return await ctx.send("⚠️ Kon de rol niet toekennen (rechten?). Aankoop geannuleerd en Boo'z teruggestort.")
 
-        # Geen rol gekoppeld → gewoon afronden
         await ctx.send(f"✅ Gekocht: **{key}** voor {price} Boo'z.")
 
-    # ------- Soundboard check (handig voor externe bot) -------
     @commands.command()
     async def canusesoundboard(self, ctx: commands.Context, member: discord.Member | None = None):
         """Check of jij (of @user) de vereiste soundboard-rol hebt."""
