@@ -1,4 +1,4 @@
-# [03] SETTINGS — kanalen/exclusions + rewards/interval + LLM + shop + systeem-toggles
+# [03] SETTINGS — kanalen/exclusions + rewards/interval + LLM + shop + toggles
 
 import discord
 from redbot.core import checks, commands
@@ -128,6 +128,14 @@ class SettingsMixin:
         await self.config.guild(ctx.guild).self_mute_excluded.set(on)
         await ctx.send(f"🔇 Self-mute/deaf uitsluiten: **{'aan' if on else 'uit'}**")
 
+    @commands.command()
+    @checks.admin()
+    async def settestmode(self, ctx: commands.Context, status: str):
+        """Zet testmodus (bypass VC-minimum voor jouw test-ID, zonder rewards): !settestmode on/off"""
+        on = status.lower() in ("on", "aan", "true", "yes", "1")
+        await self.config.guild(ctx.guild).test_mode.set(on)
+        await ctx.send(f"🧪 Testmodus is **{'aan' if on else 'uit'}**.")
+
     # ---------- LLM settings ----------
     @commands.command()
     @checks.admin()
@@ -217,6 +225,7 @@ class SettingsMixin:
                 f"• AFK negeren: {'aan' if g.get('afk_excluded', True) else 'uit'}",
                 f"• Self-mute/deaf uitsluiten: {'aan' if g.get('self_mute_excluded', False) else 'uit'}",
                 f"• Debug: {'aan' if g.get('debug_quiz', False) else 'uit'}",
+                f"• Testmodus: {'aan' if g.get('test_mode', False) else 'uit'}",
                 "• **Rewards**:",
                 f"   - Chat: +{g.get('chat_reward_amount',1)} / {g.get('chat_reward_cooldown_sec',300)}s",
                 f"   - Voice: +{g.get('voice_reward_amount',1)} / {g.get('voice_reward_interval_sec',300)}s",
