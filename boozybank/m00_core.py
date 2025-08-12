@@ -1,70 +1,36 @@
-# [00] CORE — bootstrap + defaults + mixin wiring (robust)
-# Laadt alle mixins als ze bestaan; anders vallen we terug op no-op mixins.
-# Default LLM-model: gpt-5-nano
+# [00] CORE — bootstrap + defaults + mixin wiring + diag
 
 from redbot.core import Config, commands
 
-# ---- Try to import mixins; fall back to no-op classes if missing ----
-try:
-    from .m01_utils import FALLBACK_BANK  # noqa: F401
-except Exception:  # pragma: no cover
-    FALLBACK_BANK = None  # alleen om import-orde te forceren
+from .m01_utils import FALLBACK_BANK  # noqa: F401 (force import order)
+from .m02_economy import EconomyMixin
+from .m03_settings import SettingsMixin
+from .m04_rewards import RewardsMixin
+from .m05_quiz import QuizMixin
 
-try:
-    from .m02_economy import EconomyMixin
-except Exception:  # pragma: no cover
-    class EconomyMixin:  # no-op
-        pass
-
-try:
-    from .m03_settings import SettingsMixin
-except Exception:  # pragma: no cover
-    class SettingsMixin:  # no-op
-        pass
-
-try:
-    from .m04_rewards import RewardsMixin
-except Exception:  # pragma: no cover
-    class RewardsMixin:  # no-op
-        async def _voice_loop(self):  # wordt defensief gecheckt
-            return
-
-try:
-    from .m05_quiz import QuizMixin
-except Exception:  # pragma: no cover
-    class QuizMixin:  # no-op
-        pass
-
-try:
-    from .m06_doctor import DoctorMixin
-except Exception:  # pragma: no cover
-    class DoctorMixin:  # no-op
-        pass
-
-
-class BoozyBank(RewardsMixin, QuizMixin, EconomyMixin, SettingsMixin, DoctorMixin, commands.Cog):
+class BoozyBank(RewardsMixin, QuizMixin, EconomyMixin, SettingsMixin, commands.Cog):
     """BoozyBank™ — Verdien Boo'z, quiz en koop dingen. Geen pay-to-win, iedereen gelijk."""
 
     def __init__(self, bot):
         self.bot = bot
+        print("[BoozyBank] __init__ starting...")
+
         self.config = Config.get_conf(self, identifier=69421, force_registration=True)
 
         # ---- Defaults (user) ----
         default_user = {
             "booz": 0,
-            "last_chat": 0,                 # voor chat reward cooldown
-            "last_voice": 0,                # voor voice interval
-            "quiz_rewards_today": 0,        # daily limit teller
-            "quiz_reward_reset_ts": 0.0,    # laatste reset timestamp
+            "last_chat": 0,
+            "last_voice": 0,
+            "quiz_rewards_today": 0,
+            "quiz_reward_reset_ts": 0.0,
         }
 
         # ---- Defaults (guild) ----
         default_guild = {
-            # Shop (optioneel gebruikt)
+            # Shop (extern soundboard via rol)
             "shop": {
                 "soundboard_access": {"price": 100, "role_id": None},
-                "color_role": {"price": 50, "role_id": None},
-                "boozy_quote": {"price": 25, "role_id": None},
             },
 
             # State
@@ -78,14 +44,15 @@ class BoozyBank(RewardsMixin, QuizMixin, EconomyMixin, SettingsMixin, DoctorMixi
             "quiz_autoclean": True,
             "quiz_clean_delay": 5,
 
-            "min_vc_humans": 3,
+            # Toggles
+            "test_mode": False,             # laat TEST_USER_ID bypassen (zonder rewards)
+            "debug_quiz": False,
             "auto_quiz_enabled": True,
             "afk_excluded": True,
             "self_mute_excluded": False,
 
-            # Toggles
-            "test_mode": False,
-            "debug_quiz": False,
+            # Minimum aantal humans in VC (voice rewards, random drop, quiz)
+            "min_vc_humans": 3,
 
             # Rewards & timings
             "chat_reward_amount": 1,
@@ -95,8 +62,8 @@ class BoozyBank(RewardsMixin, QuizMixin, EconomyMixin, SettingsMixin, DoctorMixi
             "random_drop_amount": 10,
 
             "quiz_reward_amount": 50,       # eindreward
-            "quiz_reward_reset_hour": 4,    # UTC
             "quiz_daily_limit": 5,
+            "quiz_reward_reset_hour": 4,    # UTC
 
             # LLM
             "llm_model": "gpt-5-nano",
@@ -111,21 +78,47 @@ class BoozyBank(RewardsMixin, QuizMixin, EconomyMixin, SettingsMixin, DoctorMixi
         self.quiz_cancelled: bool = False
         self._recent_questions: list[str] = []
         self._api_key: str | None = None
-        self.thema_pool = ["games", "alcohol", "films", "board games", "algemeen", "electronics"]
 
-        # ---- Background loop (alleen als RewardsMixin die heeft) ----
+        # Background loop enkel starten als RewardsMixin die heeft
         self._auto_task = None
-        # Start alleen als de mixin een _voice_loop methode heeft (anders crasht het niet)
         if hasattr(self, "_voice_loop") and callable(getattr(self, "_voice_loop")):
             try:
                 self._auto_task = self.bot.loop.create_task(self._voice_loop())
-            except Exception:
-                self._auto_task = None
+                print("[BoozyBank] voice loop started")
+            except Exception as e:
+                print(f"[BoozyBank] voice loop could not start: {e}")
+
+        print("[BoozyBank] __init__ complete")
 
     def cog_unload(self):
-        # Background task netjes stoppen
         try:
             if self._auto_task:
                 self._auto_task.cancel()
         except Exception:
             pass
+        print("[BoozyBank] cog_unload called")
+
+    # simpele ping om te verifiëren dat commands registreren
+    @commands.command()
+    async def boozyping(self, ctx: commands.Context):
+        """Ping om te checken of de cog geladen is."""
+        await ctx.send("🏓 BoozyBank leeft!")
+
+    # diagnose: toont of settings/keys werken
+    @commands.command()
+    async def boozydiag(self, ctx: commands.Context):
+        """Toont enkele kerninstellingen en sanity-check."""
+        g = await self.config.guild(ctx.guild).all()
+        await ctx.send(
+            "\n".join([
+                "🔧 **BoozyDiag**",
+                f"• quiz_channel: {g.get('quiz_channel')}",
+                f"• chat: +{g.get('chat_reward_amount')}/{g.get('chat_reward_cooldown_sec')}s",
+                f"• voice: +{g.get('voice_reward_amount')}/{g.get('voice_reward_interval_sec')}s",
+                f"• random_drop: +{g.get('random_drop_amount')} per dag",
+                f"• quiz: reward {g.get('quiz_reward_amount')} | limit {g.get('quiz_daily_limit')} | reset {g.get('quiz_reward_reset_hour')}:00 UTC",
+                f"• min_vc_humans: {g.get('min_vc_humans')} | afk_excluded: {g.get('afk_excluded')} | self_mute_excluded: {g.get('self_mute_excluded')}",
+                f"• auto_quiz_enabled: {g.get('auto_quiz_enabled')}",
+                f"• LLM: {g.get('llm_model')} (timeout {g.get('llm_timeout')}s)",
+            ])
+        )
