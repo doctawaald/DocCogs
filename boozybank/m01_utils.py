@@ -44,7 +44,6 @@ def normalize_theme(thema: str) -> str:
         "films": "films", "movies": "films",
         "algemeen": "algemeen", "general": "algemeen",
         "electronics": "electronics", "electronica": "electronics", "elektronica": "electronics",
-        "controllers": "electronics", "gamecontrollers": "electronics",
     }
     return mapping.get(t, t or "algemeen")
 
@@ -67,7 +66,7 @@ FALLBACK_BANK: Dict[str, List[MCQ]] = {
     "games": [
         MCQ("Welk bedrijf maakt de PlayStation?", ["Sony", "Microsoft", "Nintendo", "Valve"], "A"),
         MCQ("Welke Nintendo-held draagt een groene pet?", ["Luigi", "Mario", "Link", "Yoshi"], "A"),
-        MCQ("Wat verzamel je in *Minecraft* om tools te maken?", ["Hout", "Munten", "Mana", "Tickets"], "A"),
+        MCQ("Wat verzamel je in Minecraft om tools te maken?", ["Hout", "Munten", "Mana", "Tickets"], "A"),
         MCQ("In welke serie komt Master Chief voor?", ["Halo", "Gears of War", "Doom", "Mass Effect"], "A"),
         MCQ("Welke knop springt meestal op een Xbox-controller?", ["A", "B", "X", "Y"], "A"),
     ],
@@ -79,18 +78,18 @@ FALLBACK_BANK: Dict[str, List[MCQ]] = {
         MCQ("Welke wijn is rood?", ["Merlot", "Sauvignon Blanc", "Pinot Grigio", "Prosecco"], "A"),
     ],
     "films": [
-        MCQ("Wie speelde Jack in *Titanic*?", ["Leonardo DiCaprio", "Brad Pitt", "Keanu Reeves", "Tom Cruise"], "A"),
+        MCQ("Wie speelde Jack in Titanic?", ["Leonardo DiCaprio", "Brad Pitt", "Keanu Reeves", "Tom Cruise"], "A"),
         MCQ("Welke serie hoort bij lightsabers?", ["Star Wars", "Star Trek", "Blade Runner", "Alien"], "A"),
-        MCQ("Wie regisseerde *Jurassic Park*?", ["Steven Spielberg", "James Cameron", "Ridley Scott", "Peter Jackson"], "A"),
-        MCQ("Wie is de clown in *It*?", ["Pennywise", "Joker", "Chucky", "Ghostface"], "A"),
+        MCQ("Wie regisseerde Jurassic Park?", ["Steven Spielberg", "James Cameron", "Ridley Scott", "Peter Jackson"], "A"),
+        MCQ("Wie is de clown in It?", ["Pennywise", "Joker", "Chucky", "Ghostface"], "A"),
         MCQ("Welke film gaat over een tovenaarsschool?", ["Harry Potter", "Twilight", "Dune", "Matrix"], "A"),
     ],
     "boardgames": [
-        MCQ("In *Catan* ruil je vooral…", ["Grondstoffen", "Munten", "Kaarten met vragen", "Dobbelstenen"], "A"),
-        MCQ("Waarmee beweeg je in *Monopoly*?", ["Dobbelstenen", "Kaarten", "Fiches", "Zandlopers"], "A"),
-        MCQ("Bij *Uno* win je door…", ["Je laatste kaart te spelen", "Geld te sparen", "Het bord te vullen", "De koning te slaan"], "A"),
-        MCQ("Welke kleur heeft de start in *Mens-erger-je-niet*?", ["Rood", "Paars", "Zwart", "Goud"], "A"),
-        MCQ("Schaken: hoe heet de sterkste stuk?", ["Dame", "Toren", "Loper", "Koning"], "A"),
+        MCQ("In Catan ruil je vooral…", ["Grondstoffen", "Munten", "Vragenkaarten", "Dobbelstenen"], "A"),
+        MCQ("Waarmee beweeg je in Monopoly?", ["Dobbelstenen", "Kaarten", "Fiches", "Zandlopers"], "A"),
+        MCQ("Bij Uno win je door…", ["Je laatste kaart te spelen", "Geld te sparen", "Het bord te vullen", "De koning te slaan"], "A"),
+        MCQ("Welke kleur heeft de start in Mens-erger-je-niet?", ["Rood", "Paars", "Zwart", "Goud"], "A"),
+        MCQ("Schaken: hoe heet het sterkste stuk?", ["Dame", "Toren", "Loper", "Koning"], "A"),
     ],
     "electronics": [
         MCQ("Welke pool van een batterij is aangeduid met een plus?", ["Positief", "Negatief", "Aarde", "Signaal"], "A"),
