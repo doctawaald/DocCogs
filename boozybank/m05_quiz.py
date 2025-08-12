@@ -6,7 +6,7 @@ import aiohttp
 import asyncio
 import datetime
 import discord
-from typing import Optional, Dict, List, Tuple
+from typing import Dict, List, Tuple
 from redbot.core import commands, checks
 
 from .m01_utils import (
@@ -16,7 +16,7 @@ from .m01_utils import (
 
 # een kleine jargonlijst om 'easy' vragen te filteren (licht, niet babymakkelijk)
 EASY_JARGON = {
-    "slew rate","bode","fourier","miller-effect","kircHhoff","superpositie",
+    "slew rate","bode","fourier","miller-effect","kirchhoff","superpositie",
     "transferfunctie","impedantie-matching","resonantiepiek","q-factor",
     "schmitt trigger","differentiator","integrator","phase margin","gain-bandwidth",
 }
@@ -63,7 +63,7 @@ class QuizMixin:
         # difficulty instructie
         if (moeilijkheid or "").lower() == "easy":
             diff_line = ("Maak de vragen **licht makkelijk** (beginnersniveau), "
-                         "vermíjd vakjargon en extreem technische termen. "
+                         "vermijd vakjargon en extreem technische termen. "
                          "Maximaal ~18 woorden per vraag. ")
         else:
             diff_line = "Maak de vragen uitdagend maar eerlijk. "
@@ -226,10 +226,18 @@ class QuizMixin:
         test_mode = bool(g.get("test_mode", False))
         allow_bypass = (test_mode and ctx.author.id == TEST_USER_ID)
 
+        # VC-check met min_vc_humans
+        min_humans = int(g.get("min_vc_humans", 3))
         vc = ctx.author.voice.channel if ctx.author.voice else None
         humans = [m for m in (vc.members if vc else []) if not m.bot] if vc else []
-        if not allow_bypass and len(humans) < 3:
-            return await ctx.send("🔇 Je moet met minstens **3** gebruikers in een voice-kanaal zitten om te quizzen.")
+        # respecteer self-mute/deaf uitsluiting ook hier
+        if bool(g.get("self_mute_excluded", False)):
+            humans = [
+                m for m in humans
+                if not (m.voice and (m.voice.self_mute or m.voice.self_deaf))
+            ]
+        if not allow_bypass and len(humans) < min_humans:
+            return await ctx.send(f"🔇 Je moet met minstens **{min_vc_humans:=min_humans}** gebruikers in een voice-kanaal zitten om te quizzen.")
 
         initial = [ctx.message]  # ook je aanvraag straks opruimen
         await self._start_quiz(ctx.channel, thema=thema, moeilijkheid=moeilijkheid,
