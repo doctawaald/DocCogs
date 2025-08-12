@@ -3,6 +3,7 @@
 import re
 import json
 import aiohttp
+from aiohttp import ClientTimeout
 import asyncio
 import datetime
 import discord
@@ -78,7 +79,7 @@ class QuizMixin:
         ).replace("{want}", str(want))
 
         try:
-            async with aiohttp.ClientSession() as sess:
+            async with aiohttp.ClientSession(timeout=ClientTimeout(total=timeout)) as sess:
                 payload = {
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
@@ -91,7 +92,6 @@ class QuizMixin:
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                     },
-                    timeout=timeout,
                 ) as r:
                     status = r.status
                     data = await r.json()
@@ -237,7 +237,7 @@ class QuizMixin:
                 if not (m.voice and (m.voice.self_mute or m.voice.self_deaf))
             ]
         if not allow_bypass and len(humans) < min_humans:
-            return await ctx.send(f"🔇 Je moet met minstens **{min_vc_humans:=min_humans}** gebruikers in een voice-kanaal zitten om te quizzen.")
+            return await ctx.send(f"🔇 Je moet met minstens **{min_humans}** gebruikers in een voice-kanaal zitten om te quizzen.")
 
         initial = [ctx.message]  # ook je aanvraag straks opruimen
         await self._start_quiz(ctx.channel, thema=thema, moeilijkheid=moeilijkheid,
