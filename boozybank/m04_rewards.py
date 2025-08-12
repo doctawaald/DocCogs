@@ -1,4 +1,4 @@
-# [04] REWARDS — chat/voice rewards + random drop + auto-quiz (AFK uitgesloten)
+# [04] REWARDS — chat/voice rewards + random drop + auto-quiz (met toggles)
 
 import asyncio
 import datetime
@@ -48,6 +48,7 @@ class RewardsMixin:
             try:
                 for guild in self.bot.guilds:
                     g = await self.config.guild(guild).all()
+
                     afk_excl = bool(g.get("afk_excluded", True))
                     selfmute_excl = bool(g.get("self_mute_excluded", False))
                     min_humans = int(g.get("min_vc_humans", 3))
@@ -61,10 +62,15 @@ class RewardsMixin:
                     if v_amount > 0 and interval > 0:
                         now_ts = datetime.datetime.utcnow().timestamp()
                         for vc in guild.voice_channels:
-                            # AFK-kanaal uitsluiten
-                            if guild.afk_channel and vc.id == guild.afk_channel.id:
+                            # AFK-kanaal uitsluiten indien ingesteld
+                            if afk_excl and guild.afk_channel and vc.id == guild.afk_channel.id:
                                 continue
                             humans = [m for m in vc.members if not m.bot]
+                            if selfmute_excl:
+                                humans = [
+                                    m for m in humans
+                                    if not (m.voice and (m.voice.self_mute or m.voice.self_deaf))
+                                ]
                             if not humans:
                                 continue
                             for user in humans:
@@ -75,19 +81,22 @@ class RewardsMixin:
                                     await self.config.user(user).booz.set(bal + v_amount)
 
                     # ----------------
-                    # Busiest VC
+                    # Busiest VC (met filters)
                     # ----------------
                     busiest = None
                     humans_count = 0
+                    busiest_humans = []
                     for vc in guild.voice_channels:
                         if afk_excl and guild.afk_channel and vc.id == guild.afk_channel.id:
                             continue
                         humans = [m for m in vc.members if not m.bot]
                         if selfmute_excl:
-                            humans = [m for m in humans if not (m.voice and (m.voice.self_mute or m.voice.self_deaf))]
+                            humans = [
+                                m for m in humans
+                                if not (m.voice and (m.voice.self_mute or m.voice.self_deaf))
+                            ]
                         if len(humans) > humans_count:
-                            busiest, humans_count = vc, len(humans)
-
+                            busiest, humans_count, busiest_humans = vc, len(humans), humans
 
                     # Geen drukke VC → niks doen
                     if not busiest or humans_count < min_humans:
@@ -102,32 +111,31 @@ class RewardsMixin:
                     # Random drop 1×/dag
                     # ----------------
                     last_drop = g.get("last_drop", 0.0)
-                    if not last_drop or last_drop < cutoff:
+                    if (not last_drop or last_drop < cutoff) and busiest_humans:
                         drop_amt = int(g.get("random_drop_amount", 10))
                         if drop_amt > 0:
-                            lucky_candidates = [m for m in busiest.members if not m.bot]
-                            if lucky_candidates:
-                                lucky = random.choice(lucky_candidates)
-                                bal = await self.config.user(lucky).booz()
-                                await self.config.user(lucky).booz.set(bal + drop_amt)
-                                await self.config.guild(guild).last_drop.set(now_ts)
+                            lucky = random.choice(busiest_humans)
+                            bal = await self.config.user(lucky).booz()
+                            await self.config.user(lucky).booz.set(bal + drop_amt)
+                            await self.config.guild(guild).last_drop.set(now_ts)
 
-                                # probeer te melden in system channel of eerste tekstkanaal met send-permission
-                                txt = guild.system_channel or next(
-                                    (c for c in guild.text_channels if c.permissions_for(guild.me).send_messages),
-                                    None,
-                                )
-                                if txt:
-                                    try:
-                                        await txt.send(f"🎉 Random drop! {lucky.mention} ontvangt **{drop_amt} Boo'z**.")
-                                    except Exception:
-                                        pass
+                            # probeer te melden in system channel of eerste tekstkanaal met send-permission
+                            txt = guild.system_channel or next(
+                                (c for c in guild.text_channels if c.permissions_for(guild.me).send_messages),
+                                None,
+                            )
+                            if txt:
+                                try:
+                                    await txt.send(f"🎉 Random drop! {lucky.mention} ontvangt **{drop_amt} Boo'z**.")
+                                except Exception:
+                                    pass
 
                     # ----------------
                     # (Optioneel) auto-quiz 1×/dag
-                    # Laat een uitnodiging vallen in het ingestelde quizkanaal,
-                    # en start alleen als iemand reageert binnen 30s.
                     # ----------------
+                    if not auto_quiz_enabled:
+                        continue
+
                     last_quiz = g.get("last_quiz", 0.0)
                     if not last_quiz or last_quiz < cutoff:
                         quiz_channel_id = g.get("quiz_channel")
@@ -155,7 +163,7 @@ class RewardsMixin:
                         except asyncio.TimeoutError:
                             started = False
 
-                        # ruim het vraagbericht op als autoclean aanstaat
+                        # ruim het vraagbericht op (maakt niet uit of autoclean aan staat; dit is pre-quiz)
                         if ask:
                             try:
                                 await ask.delete()
