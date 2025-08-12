@@ -1,63 +1,87 @@
-# [02] ECONOMY — saldo, geef, shop, leaderboard
+# [02] ECONOMY — saldo bekijken, leaderboard, geven en admin-set
 
 import discord
-from redbot.core import commands
+from redbot.core import commands, checks
 
 class EconomyMixin:
-    @commands.command()
-    async def booz(self, ctx: commands.Context):
-        """Bekijk je saldo (Boo'z)."""
-        bal = await self.config.user(ctx.author).booz()
+    # ------- Helpers -------
+    async def _get_balance(self, member: discord.abc.User) -> int:
+        return int(await self.config.user(member).booz())
+
+    async def _set_balance(self, member: discord.abc.User, amount: int) -> None:
+        await self.config.user(member).booz.set(int(max(0, amount)))
+
+    # ------- User commands -------
+    @commands.command(aliases=["booz", "balance", "bal"])
+    async def boozybal(self, ctx: commands.Context):
+        """Toon je Boo'z saldo."""
+        bal = await self._get_balance(ctx.author)
         await ctx.send(f"💰 {ctx.author.mention}, je hebt **{bal} Boo'z**.")
+
+    @commands.command(aliases=["leaderboard", "top"])
+    async def boozytop(self, ctx: commands.Context):
+        """Top 10 Boo'z bezitters in deze server."""
+        allu = await self.config.all_users()
+        # Filter op leden die in deze guild zitten
+        rows = []
+        for uid, data in allu.items():
+            m = ctx.guild.get_member(int(uid))
+            if m:
+                rows.append((m, int(data.get("booz", 0))))
+        rows.sort(key=lambda x: x[1], reverse=True)
+        top = rows[:10]
+
+        if not top:
+            return await ctx.send("🥇 **Boozy Top 10**\n_Nog geen data_")
+
+        lines = [f"{i}. **{m.display_name}** — {bal} Boo'z" for i, (m, bal) in enumerate(top, 1)]
+        await ctx.send("🥇 **Boozy Top 10**\n" + "\n".join(lines))
 
     @commands.command()
     async def give(self, ctx: commands.Context, member: discord.Member, amount: int):
-        """Geef Boo'z aan iemand."""
-        if member.bot or amount <= 0:
-            return await ctx.send("❌ Ongeldige input.")
-        your = await self.config.user(ctx.author).booz()
+        """Geef Boo'z aan iemand: !give @user 25"""
+        if member.bot:
+            return await ctx.send("❌ Je kunt geen Boo'z geven aan bots.")
+        if amount <= 0:
+            return await ctx.send("❌ Bedrag moet > 0 zijn.")
+
+        your = await self._get_balance(ctx.author)
         if your < amount:
             return await ctx.send("❌ Niet genoeg Boo'z.")
-        await self.config.user(ctx.author).booz.set(your - amount)
-        other = await self.config.user(member).booz()
-        await self.config.user(member).booz.set(other + amount)
+        await self._set_balance(ctx.author, your - amount)
+
+        other = await self._get_balance(member)
+        await self._set_balance(member, other + amount)
+
         await ctx.send(f"💸 {ctx.author.mention} gaf **{amount} Boo'z** aan {member.mention}.")
 
+    # ------- Admin commands -------
     @commands.command()
-    async def shop(self, ctx: commands.Context):
-        """Bekijk de BoozyShop™."""
-        shop = await self.config.guild(ctx.guild).shop()
-        lines = [f"`{k}` — {v['price']} Boo'z" for k, v in shop.items()]
-        await ctx.send("🏪 **BoozyShop™**\n" + ("\n".join(lines) if lines else "_Leeg_"))
+    @checks.admin()
+    async def addmoney(self, ctx: commands.Context, member: discord.Member, amount: int):
+        """Admin: tel Boo'z bij een gebruiker op."""
+        if amount <= 0:
+            return await ctx.send("❌ Bedrag moet > 0 zijn.")
+        bal = await self._get_balance(member)
+        await self._set_balance(member, bal + amount)
+        await ctx.send(f"✅ **{member.display_name}** heeft nu **{bal + amount} Boo'z** ( +{amount} ).")
 
     @commands.command()
-    async def redeem(self, ctx: commands.Context, item: str):
-        """Koop een item uit de shop: !redeem soundboard_access"""
-        shop = await self.config.guild(ctx.guild).shop()
-        key = item.lower().strip()
-        if key not in shop:
-            return await ctx.send("❌ Dat item bestaat niet.")
-        price = int(shop[key]["price"])
-        bal = await self.config.user(ctx.author).booz()
-        if bal < price:
-            return await ctx.send("❌ Niet genoeg Boo'z.")
-        await self.config.user(ctx.author).booz.set(bal - price)
-        role_id = shop[key].get("role_id")
-        if role_id:
-            role = ctx.guild.get_role(int(role_id))
-            if role:
-                await ctx.author.add_roles(role, reason="BoozyShop aankoop")
-                return await ctx.send(f"✅ Gekocht: **{key}** — rol **{role.name}** toegevoegd.")
-        await ctx.send(f"✅ Gekocht: **{key}** voor {price} Boo'z.")
+    @checks.admin()
+    async def removemoney(self, ctx: commands.Context, member: discord.Member, amount: int):
+        """Admin: haal Boo'z weg bij een gebruiker."""
+        if amount <= 0:
+            return await ctx.send("❌ Bedrag moet > 0 zijn.")
+        bal = await self._get_balance(member)
+        new = max(0, bal - amount)
+        await self._set_balance(member, new)
+        await ctx.send(f"✅ **{member.display_name}** heeft nu **{new} Boo'z** ( -{amount} ).")
 
     @commands.command()
-    async def boozyleader(self, ctx: commands.Context):
-        """Top 10 Boo'z bezitters in deze server."""
-        allu = await self.config.all_users()
-        top = sorted(allu.items(), key=lambda kv: kv[1]["booz"], reverse=True)[:10]
-        lines = []
-        for i, (uid, data) in enumerate(top, 1):
-            m = ctx.guild.get_member(int(uid))
-            if m:
-                lines.append(f"{i}. **{m.display_name}** — {data['booz']} Boo'z")
-        await ctx.send("🥇 **Boozy Top 10**\n" + ("\n".join(lines) if lines else "_Nog geen data_"))
+    @checks.admin()
+    async def setmoney(self, ctx: commands.Context, member: discord.Member, amount: int):
+        """Admin: zet Boo'z saldo direct op een waarde."""
+        if amount < 0:
+            return await ctx.send("❌ Bedrag kan niet negatief zijn.")
+        await self._set_balance(member, amount)
+        await ctx.send(f"🧮 **{member.display_name}** staat nu op **{amount} Boo'z**.")
