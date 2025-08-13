@@ -51,6 +51,7 @@ class BoozyBank(RewardsMixin, QuizMixin, EconomyMixin, SettingsMixin, Challenges
             "quiz_channel": None,
             "quiz_autoclean": True,
             "quiz_clean_delay": 5,
+            "announce_channel": None,
 
             # Toggles
             "test_mode": False,             # laat TEST_USER_ID bypassen (zonder rewards)
