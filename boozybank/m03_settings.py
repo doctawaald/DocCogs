@@ -335,13 +335,24 @@ class SettingsMixin:
         lst = g.get("challenge_featured_list", []) or []
         week = g.get("challenge_featured_week", {}) or {}
         today = g.get("challenge_featured_today", []) or []
-        lines = [
-            f"📋 Featured modus: **auto** (auto-pick count: {cnt})" if mode == "auto"
-            else "📋 Featured modus: **manual**",
-            f"• Lijst: {', '.join(sorted(lst, key=str.lower)) if lst else '_leeg_'}",
-            f"• Vandaag: {', '.join(today) if today else 'n.v.t.'}",
-            "• Week (manual): " + ", ".join(f\"{k}:{'/'.join(v)}\" for k, v in week.items()) if week else "• Week (manual): niet ingesteld",
-        ]
+
+        lines = []
+        if mode == "auto":
+            lines.append(f"📋 Featured modus: **auto** (auto-pick count: {cnt})")
+        else:
+            lines.append("📋 Featured modus: **manual**")
+
+        lines.append(f"• Lijst: {', '.join(sorted(lst, key=str.lower)) if lst else '_leeg_'}")
+        lines.append(f"• Vandaag: {', '.join(today) if today else 'n.v.t.'}")
+
+        if week:
+            week_parts = []
+            for k, v in week.items():
+                week_parts.append(f"{k}:{'/'.join(v)}")
+            lines.append("• Week (manual): " + ", ".join(week_parts))
+        else:
+            lines.append("• Week (manual): niet ingesteld")
+
         await ctx.send("\n".join(lines))
 
     # Handige diagnose
