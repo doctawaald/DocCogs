@@ -1,4 +1,4 @@
-# [03] SETTINGS — kanalen/exclusions + rewards/interval + LLM + shop + toggles + Games/Featured
+# [03] SETTINGS — kanalen/exclusions + rewards/interval + LLM + shop + toggles + Games/Featured + Announce-kanaal
 
 import discord
 from redbot.core import checks, commands
@@ -13,6 +13,21 @@ class SettingsMixin:
         ch = channel or ctx.channel
         await self.config.guild(ctx.guild).quiz_channel.set(ch.id)
         await ctx.send(f"✅ Quizkanaal ingesteld op {ch.mention}")
+
+    @commands.command()
+    @checks.admin()
+    async def setannouncechannel(self, ctx: commands.Context, channel: discord.TextChannel | None = None):
+        """Stel het kanaal in voor challenge/auto-claim meldingen (default: dit kanaal)."""
+        ch = channel or ctx.channel
+        await self.config.guild(ctx.guild).announce_channel.set(ch.id)
+        await ctx.send(f"📣 Announce-kanaal ingesteld op {ch.mention}")
+
+    @commands.command()
+    @checks.admin()
+    async def clearannouncechannel(self, ctx: commands.Context):
+        """Verwijder het ingestelde announce-kanaal (valt terug op system channel)."""
+        await self.config.guild(ctx.guild).announce_channel.clear()
+        await ctx.send("🧹 Announce-kanaal gewist. Fallback: system channel.")
 
     @commands.command()
     @checks.admin()
@@ -207,8 +222,7 @@ class SettingsMixin:
             else:
                 await ctx.send("❌ Dat item bestaat niet.")
 
-    # ---------- Games/Featured (nieuwe alias-commands) ----------
-    # Deze werken op dezelfde pool als de Featured auto-lijst die de challenges gebruikt.
+    # ---------- Games/Featured ----------
     @commands.command(name="addgame")
     @checks.admin()
     async def addgame(self, ctx: commands.Context, *, game: str):
@@ -250,7 +264,6 @@ class SettingsMixin:
         lst = await self.config.guild(ctx.guild).challenge_featured_list()
         await ctx.send(f"🎮 Games: {', '.join(sorted(lst, key=str.lower)) if lst else '_leeg_'}")
 
-    # ---------- Featured Games (bestaande beheerscommando's) ----------
     @commands.command()
     @checks.admin()
     async def addfeatured(self, ctx: commands.Context, *, game: str):
@@ -363,30 +376,28 @@ class SettingsMixin:
         """Toon huidige BoozyBank-instellingen (incl. games/featured & challenges)."""
         g = await self.config.guild(ctx.guild).all()
         qch = ctx.guild.get_channel(g.get("quiz_channel")) if g.get("quiz_channel") else None
+        ach = ctx.guild.get_channel(g.get("announce_channel")) if g.get("announce_channel") else None
         excluded = [ctx.guild.get_channel(cid) for cid in g.get("excluded_channels", [])]
         exc_names = ", ".join(ch.mention for ch in excluded if ch) or "_geen_"
 
-        # Shop-regels
+        # Shop
         raw_shop = (g.get("shop", {}) or {})
-        if raw_shop:
-            shop_lines = [
-                f"   - {k}: prijs {v.get('price',0)} | rol_id {v.get('role_id')}"
-                for k, v in raw_shop.items()
-            ]
-        else:
-            shop_lines = ["   - _leeg_"]
+        shop_lines = [
+            f"   - {k}: prijs {v.get('price',0)} | rol_id {v.get('role_id')}"
+            for k, v in raw_shop.items()
+        ] if raw_shop else ["   - _leeg_"]
 
-        # Featured/Challenges
         featured_mode = g.get("challenge_featured_mode", "auto")
         featured_count = g.get("challenge_featured_count", 2)
         featured_list = g.get("challenge_featured_list", []) or []
         featured_today = g.get("challenge_featured_today", []) or []
-        reward_min = g.get("challenge_reward_min", 25)
-        reward_max = g.get("challenge_reward_max", 100)
+        reward_min = g.get("challenge_reward_min", 20)
+        reward_max = g.get("challenge_reward_max", 60)
 
         lines = [
             "🛠 **Boozy settings**",
             f"• Quizkanaal: {qch.mention if qch else '_niet ingesteld_'}",
+            f"• Announce-kanaal: {ach.mention if ach else '_system/fallback_'}",
             f"• Excluded: {exc_names}",
             f"• Auto-clean: {'aan' if g.get('quiz_autoclean', True) else 'uit'} (delay {g.get('quiz_clean_delay',5)}s)",
             f"• Min. VC-humans: {g.get('min_vc_humans',3)}",
@@ -412,7 +423,7 @@ class SettingsMixin:
             f"   - Featured vandaag: {', '.join(featured_today) if featured_today else '_n.v.t._'}",
             "• **Challenges**:",
             f"   - Auto-claim: {'aan' if g.get('challenge_auto_enabled', True) else 'uit'} | Daily count: {g.get('challenge_daily_count',3)} | Reset (UTC): {g.get('challenge_reset_hour',4)}:00",
-            f"   - Fallback reward-range: {reward_min}..{reward_max}",
+            f"   - Reward-range (fallback/GPT clamp): {reward_min}..{reward_max}",
         ])
 
         await ctx.send("\n".join(lines))
