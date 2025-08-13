@@ -1,4 +1,4 @@
-# [03] SETTINGS — kanalen/exclusions + rewards/interval + LLM + shop + toggles + Featured Games
+# [03] SETTINGS — kanalen/exclusions + rewards/interval + LLM + shop + toggles + Games/Featured
 
 import discord
 from redbot.core import checks, commands
@@ -207,7 +207,50 @@ class SettingsMixin:
             else:
                 await ctx.send("❌ Dat item bestaat niet.")
 
-    # ---------- Featured Games (voor challenges) ----------
+    # ---------- Games/Featured (nieuwe alias-commands) ----------
+    # Deze werken op dezelfde pool als de Featured auto-lijst die de challenges gebruikt.
+    @commands.command(name="addgame")
+    @checks.admin()
+    async def addgame(self, ctx: commands.Context, *, game: str):
+        """Voeg een game toe aan de game-lijst (gebruikt voor Featured/Challenges)."""
+        game = game.strip()
+        if not game:
+            return await ctx.send("❌ Geef een geldige game-naam.")
+        async with self.config.guild(ctx.guild).challenge_featured_list() as lst:
+            if game in lst:
+                return await ctx.send(f"ℹ️ **{game}** staat al in de lijst.")
+            lst.append(game)
+            lst_sorted = sorted(lst, key=str.lower)
+        await ctx.send(f"🎮 Toegevoegd: **{game}**\nLijst: {', '.join(lst_sorted)}")
+
+    @commands.command(name="removegame")
+    @checks.admin()
+    async def removegame(self, ctx: commands.Context, *, game: str):
+        """Verwijder een game uit de game-lijst."""
+        game = game.strip()
+        async with self.config.guild(ctx.guild).challenge_featured_list() as lst:
+            if game not in lst:
+                return await ctx.send(f"❌ **{game}** staat niet in de lijst.")
+            lst.remove(game)
+            lst_sorted = sorted(lst, key=str.lower)
+        await ctx.send(f"🗑️ Verwijderd: **{game}**\nLijst: {', '.join(lst_sorted) if lst_sorted else '_leeg_'}")
+
+    @commands.command(name="setgamelist")
+    @checks.admin()
+    async def setgamelist(self, ctx: commands.Context, *, games_csv: str):
+        """Overschrijf de game-lijst (komma-gescheiden). Voorbeeld: !setgamelist Fortnite, Rocket League, REPO"""
+        names = [g.strip() for g in games_csv.split(",") if g.strip()]
+        names = sorted(list(dict.fromkeys(names)), key=str.lower)  # uniek + sort
+        await self.config.guild(ctx.guild).challenge_featured_list.set(names)
+        await ctx.send(f"🗂️ Game-lijst ingesteld: {', '.join(names) if names else '_leeg_'}")
+
+    @commands.command()
+    async def listgames(self, ctx: commands.Context):
+        """Toon de huidige game-lijst (auto-pool voor Featured/Challenges)."""
+        lst = await self.config.guild(ctx.guild).challenge_featured_list()
+        await ctx.send(f"🎮 Games: {', '.join(sorted(lst, key=str.lower)) if lst else '_leeg_'}")
+
+    # ---------- Featured Games (bestaande beheerscommando's) ----------
     @commands.command()
     @checks.admin()
     async def addfeatured(self, ctx: commands.Context, *, game: str):
@@ -216,7 +259,7 @@ class SettingsMixin:
         async with self.config.guild(ctx.guild).challenge_featured_list() as lst:
             if game not in lst:
                 lst.append(game)
-        await ctx.send(f"🎮 Toegevoegd aan featured-lijst: **{game}**")
+        await ctx.send(f"✅ Featured +: **{game}**")
 
     @commands.command()
     @checks.admin()
@@ -226,7 +269,7 @@ class SettingsMixin:
         async with self.config.guild(ctx.guild).challenge_featured_list() as lst:
             if game in lst:
                 lst.remove(game)
-        await ctx.send(f"🗑️ Verwijderd uit featured-lijst: **{game}**")
+        await ctx.send(f"✅ Featured −: **{game}**")
 
     @commands.command()
     async def listfeatured(self, ctx: commands.Context):
@@ -239,7 +282,7 @@ class SettingsMixin:
         today = g.get("challenge_featured_today", []) or []
         lines = [
             f"🗂️ Featured modus: **{mode}** (auto-pick count: {cnt})",
-            f"• Lijst: {', '.join(lst) if lst else '_leeg_'}",
+            f"• Lijst: {', '.join(sorted(lst, key=str.lower)) if lst else '_leeg_'}",
             f"• Vandaag: {', '.join(today) if today else '_n.v.t._'}",
             "• Week (manual): " + ", ".join(f"{k}:{'/'.join(v)}" for k, v in week.items()) if week else "• Week (manual): _niet ingesteld_",
         ]
@@ -317,7 +360,7 @@ class SettingsMixin:
     # ---------- Overzicht ----------
     @commands.command()
     async def boozysettings(self, ctx: commands.Context):
-        """Toon huidige BoozyBank-instellingen (incl. featured games & challenges)."""
+        """Toon huidige BoozyBank-instellingen (incl. games/featured & challenges)."""
         g = await self.config.guild(ctx.guild).all()
         qch = ctx.guild.get_channel(g.get("quiz_channel")) if g.get("quiz_channel") else None
         excluded = [ctx.guild.get_channel(cid) for cid in g.get("excluded_channels", [])]
@@ -363,12 +406,13 @@ class SettingsMixin:
         lines.extend(shop_lines)
 
         lines.extend([
+            "• **Games/Featured**:",
+            f"   - Game-lijst: {', '.join(sorted(featured_list, key=str.lower)) if featured_list else '_leeg_'}",
+            f"   - Featured modus: {featured_mode} | auto-pick: {featured_count}",
+            f"   - Featured vandaag: {', '.join(featured_today) if featured_today else '_n.v.t._'}",
             "• **Challenges**:",
             f"   - Auto-claim: {'aan' if g.get('challenge_auto_enabled', True) else 'uit'} | Daily count: {g.get('challenge_daily_count',3)} | Reset (UTC): {g.get('challenge_reset_hour',4)}:00",
             f"   - Fallback reward-range: {reward_min}..{reward_max}",
-            f"   - Featured modus: {featured_mode} | auto-pick: {featured_count}",
-            f"   - Featured lijst: {', '.join(featured_list) if featured_list else '_leeg_'}",
-            f"   - Featured vandaag: {', '.join(featured_today) if featured_today else '_n.v.t._'}",
         ])
 
         await ctx.send("\n".join(lines))
