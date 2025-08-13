@@ -22,7 +22,8 @@ class BoozyBank(SettingsMixin, ChallengesMixin, commands.Cog):
         self.bot = bot
 
         # Config
-        self.config = Config.get_conf(self, identifier=0xB007B00Z, force_registration=True)
+        # FIX: geldige hex identifier (geen 'Z')
+        self.config = Config.get_conf(self, identifier=0xB007B00E, force_registration=True)
 
         # M00#2.2 DEFAULTS
         default_guild = {
@@ -72,7 +73,7 @@ class BoozyBank(SettingsMixin, ChallengesMixin, commands.Cog):
 
             # Challenge gedrag
             "challenge_auto_enabled": True,
-            "challenge_daily_count": 4,          # houden we hier op 4, maar m06 forceert 4
+            "challenge_daily_count": 4,          # we forceren 4 in m06
             "challenge_reset_hour": 4,
             "challenge_reward_min": 20,
             "challenge_reward_max": 60,
