@@ -1,11 +1,20 @@
 # M03 --- SETTINGS -----------------------------------------------------------
 # Kanalen, toggles, reward-instellingen, games/featured beheer, shop
 # + Globale testmodus + overzicht
+# Met uniforme bevestigingen en handige aliassen.
 # ---------------------------------------------------------------------------
 
 # M03#1 IMPORTS
 import discord
 from redbot.core import checks, commands
+
+# M03#1.1 SMALL HELPER
+async def send_ok(ctx: commands.Context, text: str):
+    """Uniforme ✅ bevestiging naar het kanaal van het command."""
+    try:
+        await ctx.send(f"✅ {text}")
+    except Exception:
+        pass
 
 
 # M03#2 MIXIN
@@ -18,7 +27,13 @@ class SettingsMixin:
         """Stel quizkanaal in (default: dit kanaal)."""
         ch = channel or ctx.channel
         await self.config.guild(ctx.guild).quiz_channel.set(ch.id)
-        await ctx.send(f"✅ Quizkanaal ingesteld op {ch.mention}")
+        await send_ok(ctx, f"Quizkanaal ingesteld op {ch.mention}")
+
+    # Alias: !setquiz
+    @commands.command(name="setquiz")
+    @checks.admin()
+    async def setquiz_alias(self, ctx: commands.Context, channel: discord.TextChannel | None = None):
+        await self.setquizchannel(ctx, channel)
 
     # M03#2.2 Announce-kanaal
     @commands.command()
@@ -27,14 +42,20 @@ class SettingsMixin:
         """Stel announce-kanaal in (challenge/community meldingen)."""
         ch = channel or ctx.channel
         await self.config.guild(ctx.guild).announce_channel.set(ch.id)
-        await ctx.send(f"📣 Announce-kanaal ingesteld op {ch.mention}")
+        await send_ok(ctx, f"Announce-kanaal ingesteld op {ch.mention}")
+
+    # Alias: !setannounce (wat jij typte)
+    @commands.command(name="setannounce")
+    @checks.admin()
+    async def setannounce_alias(self, ctx: commands.Context, channel: discord.TextChannel | None = None):
+        await self.setannouncechannel(ctx, channel)
 
     @commands.command()
     @checks.admin()
     async def clearannouncechannel(self, ctx: commands.Context):
         """Verwijder announce-kanaal (fallback: system channel)."""
         await self.config.guild(ctx.guild).announce_channel.clear()
-        await ctx.send("🧹 Announce-kanaal gewist. Fallback: system channel.")
+        await send_ok(ctx, "Announce-kanaal gewist. Fallback: system channel.")
 
     # M03#2.3 Exclude/Include kanaal voor rewards
     @commands.command()
@@ -45,7 +66,7 @@ class SettingsMixin:
         async with self.config.guild(ctx.guild).excluded_channels() as exc:
             if ch.id not in exc:
                 exc.append(ch.id)
-        await ctx.send(f"🚫 {ch.mention} uitgesloten van rewards.")
+        await send_ok(ctx, f"{ch.mention} uitgesloten van rewards.")
 
     @commands.command()
     @checks.admin()
@@ -55,49 +76,52 @@ class SettingsMixin:
         async with self.config.guild(ctx.guild).excluded_channels() as exc:
             if ch.id in exc:
                 exc.remove(ch.id)
-        await ctx.send(f"✅ {ch.mention} doet weer mee voor rewards.")
+        await send_ok(ctx, f"{ch.mention} doet weer mee voor rewards.")
 
     # ----------------- REWARDS & TIMING ------------------------------------
-    # M03#2.4 Chat reward
     @commands.command()
     @checks.admin()
     async def setchatreward(self, ctx: commands.Context, amount: int, cooldown_sec: int):
         """!setchatreward <amount> <cooldown_sec>"""
-        await self.config.guild(ctx.guild).chat_reward_amount.set(max(0, amount))
-        await self.config.guild(ctx.guild).chat_reward_cooldown_sec.set(max(0, cooldown_sec))
-        await ctx.send(f"💬 Chat: +{max(0,amount)} per {max(0,cooldown_sec)}s")
+        amount = max(0, int(amount))
+        cd = max(0, int(cooldown_sec))
+        await self.config.guild(ctx.guild).chat_reward_amount.set(amount)
+        await self.config.guild(ctx.guild).chat_reward_cooldown_sec.set(cd)
+        await send_ok(ctx, f"Chat-reward gezet op +{amount} per {cd}s")
 
-    # M03#2.5 Voice reward
     @commands.command()
     @checks.admin()
     async def setvoicereward(self, ctx: commands.Context, amount: int, interval_sec: int):
         """!setvoicereward <amount> <interval_sec>"""
-        await self.config.guild(ctx.guild).voice_reward_amount.set(max(0, amount))
-        await self.config.guild(ctx.guild).voice_reward_interval_sec.set(max(0, interval_sec))
-        await ctx.send(f"🎙️ Voice: +{max(0,amount)} per {max(0,interval_sec)}s")
+        amount = max(0, int(amount))
+        itv = max(0, int(interval_sec))
+        await self.config.guild(ctx.guild).voice_reward_amount.set(amount)
+        await self.config.guild(ctx.guild).voice_reward_interval_sec.set(itv)
+        await send_ok(ctx, f"Voice-reward gezet op +{amount} per {itv}s")
 
-    # M03#2.6 Random drop
     @commands.command()
     @checks.admin()
     async def setrandomdrop(self, ctx: commands.Context, amount: int):
         """!setrandomdrop <amount> (1× per dag)"""
-        await self.config.guild(ctx.guild).random_drop_amount.set(max(0, amount))
-        await ctx.send(f"🎁 Random drop: +{max(0,amount)} Boo'z per dag")
+        amount = max(0, int(amount))
+        await self.config.guild(ctx.guild).random_drop_amount.set(amount)
+        await send_ok(ctx, f"Random drop ingesteld op +{amount} Boo'z per dag")
 
-    # M03#2.7 Quiz reward & limieten
     @commands.command()
     @checks.admin()
     async def setquizreward(self, ctx: commands.Context, amount: int):
         """!setquizreward <amount> (eindreward voor winnaar)"""
-        await self.config.guild(ctx.guild).quiz_reward_amount.set(max(0, amount))
-        await ctx.send(f"🏆 Quiz eindreward: +{max(0,amount)} Boo'z")
+        amount = max(0, int(amount))
+        await self.config.guild(ctx.guild).quiz_reward_amount.set(amount)
+        await send_ok(ctx, f"Quiz eindreward ingesteld op +{amount} Boo'z")
 
     @commands.command()
     @checks.admin()
     async def setquizlimit(self, ctx: commands.Context, limit: int):
         """!setquizlimit <n> (belonende quizzes per dag per user)"""
-        await self.config.guild(ctx.guild).quiz_daily_limit.set(max(0, limit))
-        await ctx.send(f"🚦 Quiz daily limit: **{max(0, limit)}**")
+        limit = max(0, int(limit))
+        await self.config.guild(ctx.guild).quiz_daily_limit.set(limit)
+        await send_ok(ctx, f"Quiz daily limit ingesteld op {limit}")
 
     @commands.command()
     @checks.admin()
@@ -105,53 +129,48 @@ class SettingsMixin:
         """!setquizresethour <0-23> (UTC)"""
         hour = min(23, max(0, int(hour_utc)))
         await self.config.guild(ctx.guild).quiz_reward_reset_hour.set(hour)
-        await ctx.send(f"⏰ Quiz reset-uur: {hour}:00 UTC")
+        await send_ok(ctx, f"Quiz reset-uur (UTC) ingesteld op {hour}:00")
 
     # ----------------- SYSTEEM TOGGLES -------------------------------------
-    # M03#2.8 Auto-clean quiz
     @commands.command()
     @checks.admin()
     async def setautoclean(self, ctx: commands.Context, status: str):
         """!setautoclean on/off (quiz-berichten opruimen)"""
         on = status.lower() in ("on", "aan", "true", "yes", "1")
         await self.config.guild(ctx.guild).quiz_autoclean.set(on)
-        await ctx.send(f"🧹 Auto-clean is **{'aan' if on else 'uit'}**.")
+        await send_ok(ctx, f"Auto-clean is {'aan' if on else 'uit'}")
 
-    # M03#2.9 Cleanup delay
     @commands.command()
     @checks.admin()
     async def setcleandelay(self, ctx: commands.Context, seconds: int):
         """!setcleandelay <s>"""
         s = max(0, int(seconds))
         await self.config.guild(ctx.guild).quiz_clean_delay.set(s)
-        await ctx.send(f"⏳ Cleanup delay: **{s}s**")
+        await send_ok(ctx, f"Cleanup delay ingesteld op {s}s")
 
-    # M03#2.10 VC minimum
     @commands.command()
     @checks.admin()
     async def setminvc(self, ctx: commands.Context, n: int):
         """!setminvc <n> (min #humans in VC voor rewards/quiz/drop)"""
         n = max(0, int(n))
         await self.config.guild(ctx.guild).min_vc_humans.set(n)
-        await ctx.send(f"👥 Min. VC-humans: **{n}**")
+        await send_ok(ctx, f"Min. VC-humans ingesteld op {n}")
 
-    # M03#2.11 Auto-quiz
     @commands.command()
     @checks.admin()
     async def setautoquiz(self, ctx: commands.Context, status: str):
         """!setautoquiz on/off"""
         on = status.lower() in ("on", "aan", "true", "yes", "1")
         await self.config.guild(ctx.guild).auto_quiz_enabled.set(on)
-        await ctx.send(f"🤖 Auto-quiz is **{'aan' if on else 'uit'}**.")
+        await send_ok(ctx, f"Auto-quiz is {'aan' if on else 'uit'}")
 
-    # M03#2.12 AFK negeren / self-mute uitsluiten
     @commands.command()
     @checks.admin()
     async def setafkignore(self, ctx: commands.Context, status: str):
         """!setafkignore on/off"""
         on = status.lower() in ("on", "aan", "true", "yes", "1")
         await self.config.guild(ctx.guild).afk_excluded.set(on)
-        await ctx.send(f"😴 AFK-kanaal negeren: **{'aan' if on else 'uit'}**")
+        await send_ok(ctx, f"AFK-kanaal negeren is {'aan' if on else 'uit'}")
 
     @commands.command()
     @checks.admin()
@@ -159,25 +178,25 @@ class SettingsMixin:
         """!setselfmuteignore on/off"""
         on = status.lower() in ("on", "aan", "true", "yes", "1")
         await self.config.guild(ctx.guild).self_mute_excluded.set(on)
-        await ctx.send(f"🔇 Self-mute/deaf uitsluiten: **{'aan' if on else 'uit'}**")
+        await send_ok(ctx, f"Self-mute/deaf uitsluiten is {'aan' if on else 'uit'}")
 
-    # M03#2.13 Legacy test (bestaand)
+    # Legacy test toggle
     @commands.command()
     @checks.admin()
     async def settestmode(self, ctx: commands.Context, status: str):
         """!settestmode on/off (legacy paden)"""
         on = status.lower() in ("on", "aan", "true", "yes", "1")
         await self.config.guild(ctx.guild).test_mode.set(on)
-        await ctx.send(f"🧪 Testmodus (legacy) is **{'aan' if on else 'uit'}**.")
+        await send_ok(ctx, f"Legacy testmodus is {'aan' if on else 'uit'}")
 
-    # M03#2.14 NIEUW: Globale testmodus
-    @commands.command()
+    # Globale testmodus (belangrijk)
+    @commands.command(name="boozytestmode")
     @checks.admin()
-    async def setglobaltest(self, ctx: commands.Context, status: str):
-        """!setglobaltest on/off — alle Boo’z rewards uit voor *alles*"""
-        on = status.lower() in ("on","aan","true","yes","1")
+    async def boozytestmode(self, ctx: commands.Context, status: str):
+        """!boozytestmode on/off — alle Boo’z rewards uit voor *alles*"""
+        on = status.lower() in ("on", "aan", "true", "yes", "1")
         await self.config.guild(ctx.guild).global_testmode.set(on)
-        await ctx.send(f"🧪 Globale testmodus is **{'aan' if on else 'uit'}**.")
+        await send_ok(ctx, f"Globale testmodus is {'aan' if on else 'uit'}")
 
     @commands.command()
     async def teststatus(self, ctx: commands.Context):
@@ -186,13 +205,13 @@ class SettingsMixin:
         await ctx.send(f"🧪 Globale testmodus: **{'aan' if on else 'uit'}**")
 
     # ----------------- LLM SETTINGS ----------------------------------------
-    # M03#2.15 Model + timeout
     @commands.command()
     @checks.admin()
     async def setllmmodel(self, ctx: commands.Context, *, model: str):
         """!setllmmodel <model> (bv. gpt-5-nano)"""
-        await self.config.guild(ctx.guild).llm_model.set(model.strip())
-        await ctx.send(f"🧠 LLM-model gezet op `{model.strip()}`")
+        model = model.strip()
+        await self.config.guild(ctx.guild).llm_model.set(model)
+        await send_ok(ctx, f"LLM-model gezet op `{model}`")
 
     @commands.command()
     @checks.admin()
@@ -200,21 +219,21 @@ class SettingsMixin:
         """!setllmtimeout <seconden> (5..120)"""
         s = max(5, min(120, int(seconds)))
         await self.config.guild(ctx.guild).llm_timeout.set(s)
-        await ctx.send(f"⏱️ LLM-timeout ingesteld op **{s}s**")
+        await send_ok(ctx, f"LLM-timeout ingesteld op {s}s")
 
     # ----------------- SHOP -------------------------------------------------
-    # M03#2.16 Prijs / rol / items
     @commands.command()
     @checks.admin()
     async def setshopprice(self, ctx: commands.Context, key: str, price: int):
         """!setshopprice <key> <price>"""
         key = key.lower().strip()
+        price = max(0, int(price))
         async with self.config.guild(ctx.guild).shop() as shop:
             if key not in shop:
-                shop[key] = {"price": max(0, price), "role_id": None}
+                shop[key] = {"price": price, "role_id": None}
             else:
-                shop[key]["price"] = max(0, price)
-        await ctx.send(f"🏪 Prijs van **{key}** gezet op **{max(0,price)}** Boo'z.")
+                shop[key]["price"] = price
+        await send_ok(ctx, f"Prijs van **{key}** gezet op {price} Boo'z")
 
     @commands.command()
     @checks.admin()
@@ -226,16 +245,17 @@ class SettingsMixin:
                 shop[key] = {"price": 0, "role_id": role.id}
             else:
                 shop[key]["role_id"] = role.id
-        await ctx.send(f"🎭 Rol **{role.name}** gekoppeld aan **{key}**.")
+        await send_ok(ctx, f"Rol **{role.name}** gekoppeld aan **{key}**")
 
     @commands.command()
     @checks.admin()
     async def addshopitem(self, ctx: commands.Context, key: str, price: int = 0):
         """!addshopitem <key> [price]"""
         key = key.lower().strip()
+        price = max(0, int(price))
         async with self.config.guild(ctx.guild).shop() as shop:
-            shop[key] = {"price": max(0, price), "role_id": None}
-        await ctx.send(f"🆕 Item **{key}** toegevoegd met prijs **{max(0,price)}** Boo'z.")
+            shop[key] = {"price": price, "role_id": None}
+        await send_ok(ctx, f"Item **{key}** toegevoegd (prijs {price} Boo'z)")
 
     @commands.command()
     @checks.admin()
@@ -245,12 +265,11 @@ class SettingsMixin:
         async with self.config.guild(ctx.guild).shop() as shop:
             if key in shop:
                 del shop[key]
-                await ctx.send(f"🗑️ Item **{key}** verwijderd.")
+                await send_ok(ctx, f"Item **{key}** verwijderd")
             else:
                 await ctx.send("❌ Dat item bestaat niet.")
 
     # ----------------- GAMES / FEATURED ------------------------------------
-    # M03#2.17 Game-lijst beheer
     @commands.command(name="addgame")
     @checks.admin()
     async def addgame(self, ctx: commands.Context, *, game: str):
@@ -263,7 +282,7 @@ class SettingsMixin:
                 return await ctx.send(f"ℹ️ **{game}** staat al in de lijst.")
             lst.append(game)
             lst_sorted = sorted(lst, key=str.lower)
-        await ctx.send(f"🎮 Toegevoegd: **{game}**\nLijst: {', '.join(lst_sorted)}")
+        await send_ok(ctx, f"Toegevoegd: **{game}**\nLijst: {', '.join(lst_sorted)}")
 
     @commands.command(name="removegame")
     @checks.admin()
@@ -275,7 +294,7 @@ class SettingsMixin:
                 return await ctx.send(f"❌ **{game}** staat niet in de lijst.")
             lst.remove(game)
             lst_sorted = sorted(lst, key=str.lower)
-        await ctx.send(f"🗑️ Verwijderd: **{game}**\nLijst: {', '.join(lst_sorted) if lst_sorted else '_leeg_'}")
+        await send_ok(ctx, f"Verwijderd: **{game}**\nLijst: {', '.join(lst_sorted) if lst_sorted else '_leeg_'}")
 
     @commands.command(name="setgamelist")
     @checks.admin()
@@ -284,7 +303,7 @@ class SettingsMixin:
         names = [g.strip() for g in games_csv.split(",") if g.strip()]
         names = sorted(list(dict.fromkeys(names)), key=str.lower)
         await self.config.guild(ctx.guild).challenge_featured_list.set(names)
-        await ctx.send(f"🗂️ Game-lijst ingesteld: {', '.join(names) if names else '_leeg_'}")
+        await send_ok(ctx, f"Game-lijst ingesteld: {', '.join(names) if names else '_leeg_'}")
 
     @commands.command()
     async def listgames(self, ctx: commands.Context):
@@ -292,7 +311,6 @@ class SettingsMixin:
         lst = await self.config.guild(ctx.guild).challenge_featured_list()
         await ctx.send(f"🎮 Games: {', '.join(sorted(lst, key=str.lower)) if lst else '_leeg_'}")
 
-    # M03#2.18 Featured modus
     @commands.command()
     @checks.admin()
     async def setfeaturedmode(self, ctx: commands.Context, mode: str):
@@ -301,7 +319,7 @@ class SettingsMixin:
         if m not in ("auto", "manual"):
             return await ctx.send("❌ Kies 'auto' of 'manual'.")
         await self.config.guild(ctx.guild).challenge_featured_mode.set(m)
-        await ctx.send(f"⚙️ Featured-modus: **{m}**")
+        await send_ok(ctx, f"Featured-modus gezet op {m}")
 
     @commands.command()
     @checks.admin()
@@ -309,7 +327,7 @@ class SettingsMixin:
         """Auto-modus: hoeveel games per dag kiezen (1..3)."""
         n = min(3, max(1, int(n)))
         await self.config.guild(ctx.guild).challenge_featured_count.set(n)
-        await ctx.send(f"🔢 Featured auto-pick per dag: **{n}**")
+        await send_ok(ctx, f"Featured auto-pick per dag ingesteld op {n}")
 
     @commands.command()
     @checks.admin()
@@ -319,12 +337,12 @@ class SettingsMixin:
         Voorbeeld: !setfeaturedday mon Fortnite, Rocket League
         """
         wk = weekday.lower()[:3]
-        if wk not in {"mon","tue","wed","thu","fri","sat","sun"}:
+        if wk not in {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}:
             return await ctx.send("❌ Weekdag moet zijn: mon,tue,wed,thu,fri,sat,sun")
         games = [g.strip() for g in games_csv.split(",") if g.strip()]
         async with self.config.guild(ctx.guild).challenge_featured_week() as week:
             week[wk] = games
-        await ctx.send(f"📅 {wk}: {', '.join(games) if games else '_leeg_'}")
+        await send_ok(ctx, f"{wk}: {', '.join(games) if games else '_leeg_'}")
 
     @commands.command()
     async def listfeatured(self, ctx: commands.Context):
@@ -337,11 +355,10 @@ class SettingsMixin:
         today = g.get("challenge_featured_today", []) or []
 
         lines = []
-        if mode == "auto":
-            lines.append(f"📋 Featured modus: **auto** (auto-pick count: {cnt})")
-        else:
-            lines.append("📋 Featured modus: **manual**")
-
+        lines.append(
+            f"📋 Featured modus: **auto** (auto-pick count: {cnt})"
+            if mode == "auto" else "📋 Featured modus: **manual**"
+        )
         lines.append(f"• Lijst: {', '.join(sorted(lst, key=str.lower)) if lst else '_leeg_'}")
         lines.append(f"• Vandaag: {', '.join(today) if today else 'n.v.t.'}")
 
@@ -355,19 +372,14 @@ class SettingsMixin:
 
         await ctx.send("\n".join(lines))
 
-    # Handige diagnose
     @commands.command()
     @checks.admin()
     async def recalcfeatured(self, ctx: commands.Context):
         """(Admin) Bereken en cache 'featured today' meteen, en toon het resultaat."""
         today = await self._featured_today(ctx.guild)
-        if today:
-            await ctx.send(f"🎮 Featured today: {', '.join(today)}")
-        else:
-            await ctx.send("🎮 Featured today: _geen_ (controleer je gamelijst of modus)")
+        await send_ok(ctx, f"Featured today: {', '.join(today) if today else '_geen_'}")
 
     # ----------------- OVERZICHT -------------------------------------------
-    # M03#2.19 Overzicht
     @commands.command()
     async def boozysettings(self, ctx: commands.Context):
         """Toon huidige BoozyBank-instellingen (incl. games/featured & challenges)."""
