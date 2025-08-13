@@ -1,21 +1,20 @@
-# [06] CHALLENGES — 5 per dag, exact 1 game-challenge (indien mogelijk),
-# rewards 20..60, presence tracking, auto-claim, announce channel, nette beschrijvingen,
-# + !boozychallenges + !refreshchallenges (+ alias !regenchallenges)
+# [06] CHALLENGES — 4 per dag, exact 1 game-challenge (indien possible),
+# geen duplicate categorieën, rewards 20..60, presence tracking, auto-claim,
+# DM-weergave + DM-beloning, announce channel voor community, + commands
 
 import asyncio
 import datetime
 import json
 import random
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import aiohttp
 import discord
 from aiohttp import ClientTimeout
 from redbot.core import commands
 
-
-# --------- kleine helpers ---------
+# ---------- helpers ----------
 def _utc_ts() -> float:
     return datetime.datetime.utcnow().timestamp()
 
@@ -30,9 +29,7 @@ def _cutoff_ts_at_hour_utc(hour: int) -> float:
     return tgt.timestamp()
 
 def _weekday_key_utc() -> str:
-    # mon..sun
-    idx = datetime.datetime.utcnow().weekday()  # 0=Mon
-    return ["mon", "tue", "wed", "thu", "fri", "sat", "sun"][idx]
+    return ["mon","tue","wed","thu","fri","sat","sun"][datetime.datetime.utcnow().weekday()]
 
 def _short_game(name: Optional[str]) -> str:
     n = (name or "").strip()
@@ -59,25 +56,37 @@ def _nice_desc(ctype: str, target: int, game: str | None = None) -> str:
         return f"Speel samen {target} min in {g} vandaag"
     return "Voltooi de uitdaging van vandaag"
 
+# categorie-sets
+GENERIC_TYPES = ("playtime_single","playtime_total","unique_games","community_total")
+GAME_TYPES    = ("playtime_single_game","community_game_total")
+
+# simpele default targets per type (licht maar niet babymakkelijk)
+DEFAULT_TARGETS = {
+    "playtime_single": 45,
+    "playtime_total": 120,
+    "unique_games": 3,
+    "community_total": 90,
+    "playtime_single_game": 30,
+    "community_game_total": 120,
+}
+
+def _clamp_reward(x: int) -> int:
+    return max(20, min(60, int(x)))
+
 
 class ChallengesMixin:
     """
-    Challenge types:
-      - playtime_single         (X min in één willekeurige game — NIET featured-gebonden)
-      - playtime_total          (X min totaal, alle games — NIET featured-gebonden)
-      - unique_games            (X verschillende games — NIET featured-gebonden)
-      - playtime_single_game    (X min in *specifieke* game — FEATURED)
-      - community_total         (server-breed X min totaal — NIET featured-gebonden)
-      - community_game_total    (server-breed X min in *specifieke* game — FEATURED)
+    Presence-based challenges:
+    - generiek: playtime_single, playtime_total, unique_games, community_total
+    - game-gebonden: playtime_single_game, community_game_total
     """
 
-    # ------------------ Presence tracking ------------------
+    # ---------------- presence tracking ----------------
     @commands.Cog.listener()
     async def on_presence_update(self, before: discord.Member, after: discord.Member):
         if after.bot or not after.guild:
             return
 
-        # vind "playing" activiteit
         cur_game = None
         if after.activities:
             for act in after.activities:
@@ -98,12 +107,10 @@ class ChallengesMixin:
         prev_game = ustate["game"]
         start = ustate["start"]
 
-        # sluit vorige sessie af
         if prev_game and start:
             elapsed = max(0, now - start)
             await self._accumulate_playtime(after.guild, after, prev_game, elapsed)
 
-        # start nieuwe/clear
         if cur_game:
             ustate["game"] = cur_game
             ustate["start"] = now
@@ -111,15 +118,12 @@ class ChallengesMixin:
             ustate["game"] = None
             ustate["start"] = None
 
-        # snelle auto-claim
         await self._challenge_autoclaim_tick(after.guild)
 
     async def _accumulate_playtime(self, guild: discord.Guild, member: discord.Member, game: str, seconds: float):
         day = _day_key_utc()
-        # User-level
         async with self.config.user(member).all() as u:
-            d = u.get("challenge_day", day)
-            if d != day:
+            if u.get("challenge_day") != day:
                 u["challenge_day"] = day
                 u["challenge_total_secs"] = 0
                 u["challenge_unique_games"] = []
@@ -132,10 +136,8 @@ class ChallengesMixin:
             uniq.add(game)
             u["challenge_unique_games"] = list(uniq)
 
-        # Guild-level (server totals)
         async with self.config.guild(guild).all() as g:
-            d = g.get("challenge_day", day)
-            if d != day:
+            if g.get("challenge_day") != day:
                 g["challenge_day"] = day
                 g["challenge_server_total_secs"] = 0
                 g["challenge_samegame_clock"] = {}
@@ -144,26 +146,23 @@ class ChallengesMixin:
             sg[game] = int(sg.get(game, 0) + int(seconds))
             g["challenge_samegame_clock"] = sg
 
-    # ------------------ Featured games logica ------------------
+    # ---------------- featured today ----------------
     async def _featured_today(self, guild: discord.Guild) -> List[str]:
         g = await self.config.guild(guild).all()
         mode = (g.get("challenge_featured_mode") or "auto").lower()
         day = _day_key_utc()
 
-        # cache geldig?
         if g.get("challenge_featured_cache_day") == day:
             return g.get("challenge_featured_today") or []
 
-        today_list: List[str] = []
         if mode == "manual":
-            week = g.get("challenge_featured_week", {}) or {}
             wk = _weekday_key_utc()
-            today_list = [_norm_game(x) for x in (week.get(wk) or [])]
+            today_list = [_norm_game(x) for x in (g.get("challenge_featured_week", {}).get(wk) or [])]
         else:
             base = [_norm_game(x) for x in (g.get("challenge_featured_list") or []) if _norm_game(x)]
             cnt = int(g.get("challenge_featured_count", 2))
+            today_list = []
             if base:
-                # deterministisch random per dag/server
                 rnd = random.Random(day + str(guild.id))
                 rnd.shuffle(base)
                 today_list = base[:max(1, min(cnt, len(base)))]
@@ -172,7 +171,7 @@ class ChallengesMixin:
         await self.config.guild(guild).challenge_featured_cache_day.set(day)
         return today_list
 
-    # ------------------ LLM generatie ------------------
+    # ---------------- LLM builder ----------------
     async def _get_api_key(self) -> Optional[str]:
         if getattr(self, "_api_key", None):
             return self._api_key
@@ -183,14 +182,6 @@ class ChallengesMixin:
     async def _llm_generate_challenges(
         self, guild: discord.Guild, *, count: int, model: str, timeout: int, require_one_game: bool
     ) -> List[dict]:
-        """
-        Verwacht JSON-array van challenges:
-        [{type, target, reward, description, game?}]
-        type in:
-          'playtime_single','playtime_total','unique_games','community_total',
-          'playtime_single_game','community_game_total'
-        Voor *_game types MOET 'game' aanwezig zijn en behoren tot 'featured today'.
-        """
         api_key = await self._get_api_key()
         if not api_key:
             return []
@@ -198,7 +189,6 @@ class ChallengesMixin:
         featured = await self._featured_today(guild)
         featured_str = ", ".join(f"'{x}'" for x in featured) if featured else ""
 
-        # Reward-range expliciet 20..60 met precies 1 game challenge als het kan
         prompt = (
             "Genereer {count} Discord challenges in JSON (alleen JSON). "
             "Elke challenge: "
@@ -207,134 +197,113 @@ class ChallengesMixin:
             " reward: integer Boo'z (20..60), "
             " description: korte NL achievement-achtige zin (max 120 tekens), "
             " game?: string (vereist voor *_game types en MOET in featured lijst zitten). } "
-            "Regels: maak PRECIES 1 challenge met *_game (alleen als featured lijst niet leeg is) en de overige {rest} challenges zonder *_game. "
+            "Regels: maak PRECIES 1 challenge met *_game (alleen als featured lijst niet leeg is) en alle overige challenges zonder *_game; "
+            "herhaal geen types. "
             f"Featured today: [{featured_str}]. "
-            "Focus op lichte, haalbare doelen voor kleine communities."
-        ).replace("{count}", str(count)).replace("{rest}", str(max(0, count-1)))
+            "Focus op lichte, haalbare doelen."
+        ).replace("{count}", str(count))
 
         try:
             async with aiohttp.ClientSession(timeout=ClientTimeout(total=timeout)) as sess:
-                payload = {
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                }
+                payload = {"model": model, "messages": [{"role": "user", "content": prompt}]}
                 async with sess.post(
                     "https://api.openai.com/v1/chat/completions",
                     json=payload,
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 ) as r:
                     status = r.status
                     data = await r.json()
-        except Exception as e:
-            print(f"[BoozyBank] CHALL LLM network error: {e}")
+        except Exception:
             return []
 
         if status != 200:
-            print(f"[BoozyBank] CHALL LLM HTTP {status}: {data}")
             return []
 
         content = (data.get("choices", [{}])[0].get("message", {}) or {}).get("content", "")
         m = re.search(r"\[\s*\{.*\}\s*\]", content, re.DOTALL)
         if not m:
             return []
+
         try:
-            featured_set = set(featured)
-            arr = json.loads(m.group(0))
-            if not isinstance(arr, list):
+            raw = json.loads(m.group(0))
+            if not isinstance(raw, list):
                 return []
-            out = []
-            for ch in arr:
-                t = str(ch.get("type", ""))
-                if t not in {
-                    "playtime_single", "playtime_total", "unique_games", "community_total",
-                    "playtime_single_game", "community_game_total"
-                }:
-                    continue
-                target = int(ch.get("target", 0))
-                reward = max(20, min(60, int(ch.get("reward", 20))))  # clamp 20..60
-                game = _norm_game(ch.get("game", "")) if "game" in ch else ""
-                if target <= 0:
-                    continue
-                if t.endswith("_game"):
-                    if not featured or not game or game not in featured_set:
-                        # ongeldig game-item
-                        continue
-                # beschrijving altijd netjes maken
-                desc = _nice_desc(t, target, game)
-                item = {"type": t, "target": target, "reward": reward, "description": desc}
-                if game:
-                    item["game"] = game
-                out.append(item)
-
-            # post-constraint: precies 1 *_game (als featured bestaat)
-            game_items = [x for x in out if x["type"].endswith("_game")]
-            non_game_items = [x for x in out if not x["type"].endswith("_game")]
-
-            if featured and require_one_game:
-                # we willen exact 1 game
-                if len(game_items) == 0:
-                    # later vullen via fallback
-                    pass
-                elif len(game_items) > 1:
-                    # hou er 1, rest naar non_game (verwijderen en straks aanvullen)
-                    game_items = game_items[:1]
-            else:
-                # geen featured of we willen geen game challenge
-                game_items = []
-
-            combined = game_items + non_game_items
-            return combined[:count]
         except Exception:
             return []
-        return []
 
-    # ------------------ Fallback bouwers ------------------
-    def _fallback_generic(self) -> List[dict]:
-        # generieke simpele doelen; descriptions via _nice_desc
+        # post-filter: clamp + dedup + max 1 game-type
+        featured_set = set(featured)
+        seen_types = set()
+        out: List[dict] = []
+        game_taken = False
+
+        for ch in raw:
+            t = str(ch.get("type", ""))
+            if t not in set(GENERIC_TYPES) | set(GAME_TYPES):
+                continue
+
+            # enforce category uniqueness (behalve dat we 1 game-type toestaan)
+            if t in GENERIC_TYPES and t in seen_types:
+                continue
+            if t in GAME_TYPES:
+                if game_taken:
+                    continue
+
+            target = int(ch.get("target", DEFAULT_TARGETS.get(t, 30)))
+            reward = _clamp_reward(int(ch.get("reward", 30)))
+            game = _norm_game(ch.get("game", "")) if "game" in ch else ""
+
+            if t in GAME_TYPES:
+                if not featured or not game or game not in featured_set:
+                    continue
+
+            desc = _nice_desc(t, target, game)
+            item = {"type": t, "target": target, "reward": reward, "description": desc}
+            if game:
+                item["game"] = game
+            out.append(item)
+
+            if t in GENERIC_TYPES:
+                seen_types.add(t)
+            if t in GAME_TYPES:
+                game_taken = True
+
+        return out[:count]
+
+    # ---------------- fallbacks ----------------
+    def _fallback_generic_pool(self) -> List[dict]:
         return [
-            {"type": "playtime_total", "target": 60},
-            {"type": "unique_games",   "target": 3},
-            {"type": "playtime_single","target": 30},
-            {"type": "community_total","target": 180},
-            {"type": "playtime_total", "target": 90},
-            {"type": "unique_games",   "target": 4},
+            {"type": "playtime_single", "target": DEFAULT_TARGETS["playtime_single"]},
+            {"type": "playtime_total",  "target": DEFAULT_TARGETS["playtime_total"]},
+            {"type": "unique_games",    "target": DEFAULT_TARGETS["unique_games"]},
+            {"type": "community_total", "target": DEFAULT_TARGETS["community_total"]},
         ]
 
     def _fallback_game_for(self, game: str) -> dict:
-        # 30 min specifieke game
-        return {"type": "playtime_single_game", "target": 30, "game": game}
+        return {"type": "playtime_single_game", "target": DEFAULT_TARGETS["playtime_single_game"], "game": game}
 
-    def _decorate_rewards_and_desc(self, items: List[dict]) -> List[dict]:
+    def _decorate(self, items: List[dict]) -> List[dict]:
         rnd = random.Random(_day_key_utc())
         out = []
         for ch in items:
             t = ch["type"]
-            target = int(ch["target"])
+            target = int(ch.get("target", DEFAULT_TARGETS.get(t, 30)))
+            reward = _clamp_reward(int(ch.get("reward", rnd.randint(20, 60))))
             game = ch.get("game")
-            reward = int(ch.get("reward", rnd.randint(20, 60)))
-            reward = max(20, min(60, reward))
-            desc = _nice_desc(t, target, game)
-            item = {"type": t, "target": target, "reward": reward, "description": desc}
+            item = {"type": t, "target": target, "reward": reward, "description": _nice_desc(t, target, game)}
             if game:
                 item["game"] = _norm_game(game)
             out.append(item)
         return out
 
-    # ------------------ Challenge set beheer ------------------
+    # ---------------- set builder ----------------
     async def _ensure_challenge_set(self, guild: discord.Guild) -> None:
-        """
-        Forceer precies 5 challenges, waarvan exact 1 game-challenge als featured today beschikbaar is.
-        """
         g = await self.config.guild(guild).all()
         reset_hour = int(g.get("challenge_reset_hour", 4))
         cutoff = _cutoff_ts_at_hour_utc(reset_hour)
         current_set_ts = float(g.get("challenge_set_ts", 0.0))
-        desired_count = 5  # expliciet gevraagd
+        desired_count = 4  # <— jouw wens
 
-        # al een set en nog geldig?
         existing = g.get("challenges_today") or []
         if current_set_ts >= cutoff and len(existing) == desired_count:
             return
@@ -342,50 +311,53 @@ class ChallengesMixin:
         featured_today = await self._featured_today(guild)
         have_featured = bool(featured_today)
 
-        # LLM poging met constraint
         model = g.get("llm_model", "gpt-5-nano")
         timeout = int(g.get("llm_timeout", 45))
         llm = await self._llm_generate_challenges(
             guild, count=desired_count, model=model, timeout=timeout, require_one_game=have_featured
         )
 
-        # splits resultaat
-        game_items = [x for x in llm if x["type"].endswith("_game")]
-        non_game_items = [x for x in llm if not x["type"].endswith("_game")]
-
+        # dedup + exact 1 game + geen dubbel type
         rnd = random.Random(_day_key_utc() + str(guild.id))
+        seen_types = set()
+        chosen: List[dict] = []
+        game_taken = False
 
-        # Garandeer exact 1 game item als we featured hebben
-        ensured_game: List[dict] = []
-        if have_featured:
-            if len(game_items) >= 1:
-                ensured_game = [game_items[0]]
-            else:
-                # maak fallback game
-                game = rnd.choice(featured_today)
-                ensured_game = [self._fallback_game_for(game)]
-        else:
-            # geen featured -> 0 game items
-            ensured_game = []
+        # pak alles bruikbare uit LLM
+        for ch in llm:
+            t = ch["type"]
+            if t in GENERIC_TYPES:
+                if t in seen_types:
+                    continue
+                seen_types.add(t)
+                chosen.append(ch)
+            elif t in GAME_TYPES:
+                if game_taken:
+                    continue
+                game_taken = True
+                chosen.append(ch)
 
-        # Vul generics aan tot 5
-        needed_generics = desired_count - len(ensured_game)
-        gen_pool = non_game_items.copy()
-        if len(gen_pool) < needed_generics:
-            # aanvullen met fallback generics
-            fb = self._fallback_generic()
-            rnd.shuffle(fb)
-            gen_pool.extend(fb)
-        gen_pool = gen_pool[:needed_generics]
+        # zorg voor precies 1 game als mogelijk
+        if have_featured and not game_taken:
+            chosen.append(self._fallback_game_for(rnd.choice(featured_today)))
+            game_taken = True
 
-        # combineer en decoreer
-        newset_raw = ensured_game + gen_pool
-        newset = self._decorate_rewards_and_desc(newset_raw)
+        # vul generics aan tot desired_count, zonder dubbel type
+        pool = self._fallback_generic_pool()
+        rnd.shuffle(pool)
+        for ch in pool:
+            if len(chosen) >= desired_count:
+                break
+            if ch["type"] in seen_types:
+                continue
+            seen_types.add(ch["type"])
+            chosen.append(ch)
 
-        # id's + init fields
-        now = _utc_ts()
+        # trim / decoreer
+        chosen = chosen[:desired_count]
         final = []
-        for i, ch in enumerate(newset, start=1):
+        now = _utc_ts()
+        for i, ch in enumerate(self._decorate(chosen), start=1):
             item = {
                 "id": f"{_day_key_utc()}-{i}",
                 "type": ch["type"],
@@ -402,7 +374,7 @@ class ChallengesMixin:
         await self.config.guild(guild).challenges_today.set(final)
         await self.config.guild(guild).challenge_set_ts.set(now)
 
-    # ------------------ Auto-claim ------------------
+    # ---------------- auto-claim ----------------
     async def _challenge_autoclaim_tick(self, guild: discord.Guild):
         g = await self.config.guild(guild).all()
         if not bool(g.get("challenge_auto_enabled", True)):
@@ -429,7 +401,7 @@ class ChallengesMixin:
                 if mins >= target:
                     ch["claimed_done"] = True
                     changed = True
-                    await self._announce(guild, f"🎯 Community challenge gehaald: **{ch['description']}** — mooi bezig!")
+                    await self._announce(guild, f"🎯 Community challenge gehaald: **{ch['description']}**")
                 continue
 
             if ctype == "community_game_total":
@@ -440,9 +412,9 @@ class ChallengesMixin:
                     ch["claimed_done"] = True
                     changed = True
                     pretty = _short_game(game) or "deze game"
-                    await self._announce(guild, f"🎯 Community challenge gehaald (game): **{pretty}** — nice!")
+                    await self._announce(guild, f"🎯 Community (game) gehaald: **{pretty}**")
 
-            # per-user challenges
+            # per-user
             for m in guild.members:
                 if m.bot:
                     continue
@@ -455,25 +427,21 @@ class ChallengesMixin:
 
                 if ctype == "playtime_total":
                     if int(u.get("challenge_total_secs", 0)) // 60 >= target:
-                        await self._reward_user(m, reward, reason=f"{ch['description']}")
+                        await self._reward_user_dm(m, reward, reason=f"{ch['description']}")
                         ch.setdefault("claimed_users", []).append(uid)
                         changed = True
 
                 elif ctype == "unique_games":
-                    uniq = set(u.get("challenge_unique_games", []) or [])
-                    if len(uniq) >= target:
-                        await self._reward_user(m, reward, reason=f"{ch['description']}")
+                    if len(set(u.get("challenge_unique_games", []) or [])) >= target:
+                        await self._reward_user_dm(m, reward, reason=f"{ch['description']}")
                         ch.setdefault("claimed_users", []).append(uid)
                         changed = True
 
                 elif ctype == "playtime_single":
                     per = u.get("challenge_per_game", {}) or {}
-                    best = 0
-                    for secs in per.values():
-                        if secs > best:
-                            best = int(secs)
+                    best = max([int(x) for x in per.values()], default=0)
                     if best // 60 >= target:
-                        await self._reward_user(m, reward, reason=f"{ch['description']}")
+                        await self._reward_user_dm(m, reward, reason=f"{ch['description']}")
                         ch.setdefault("claimed_users", []).append(uid)
                         changed = True
 
@@ -482,21 +450,21 @@ class ChallengesMixin:
                     secs = int(per.get(game, 0))
                     if secs // 60 >= target:
                         pretty = _short_game(game) or "deze game"
-                        await self._reward_user(m, reward, reason=f"Speel {target} min in {pretty} vandaag")
+                        await self._reward_user_dm(m, reward, reason=f"Speel {target} min in {pretty} vandaag")
                         ch.setdefault("claimed_users", []).append(uid)
                         changed = True
 
         if changed:
             await self.config.guild(guild).challenges_today.set(chs)
 
-    async def _reward_user(self, member: discord.Member, amount: int, *, reason: str):
+    async def _reward_user_dm(self, member: discord.Member, amount: int, *, reason: str):
         bal = await self.config.user(member).booz()
         await self.config.user(member).booz.set(int(bal) + int(amount))
+        # DM i.p.v. channel
         try:
-            ch = await self._get_announce_channel(member.guild)
-            if ch and ch.permissions_for(member.guild.me).send_messages:
-                await ch.send(f"🏅 {member.mention} voltooide een challenge: **{reason}** → +{amount} Boo'z")
+            await member.send(f"🏅 Je voltooide een challenge: **{reason}** → +{amount} Boo'z")
         except Exception:
+            # als DM dicht staat, zwijgen we gewoon (geen spam in kanaal)
             pass
 
     async def _get_announce_channel(self, guild: discord.Guild) -> Optional[discord.TextChannel]:
@@ -505,7 +473,6 @@ class ChallengesMixin:
             ch = guild.get_channel(ch_id)
             if isinstance(ch, discord.TextChannel):
                 return ch
-        # fallback
         return guild.system_channel or next((c for c in guild.text_channels if c.permissions_for(guild.me).send_messages), None)
 
     async def _announce(self, guild: discord.Guild, text: str):
@@ -516,10 +483,10 @@ class ChallengesMixin:
         except Exception:
             pass
 
-    # ------------------ Commands ------------------
+    # ---------------- commands ----------------
     @commands.command(name="boozychallenges")
     async def boozychallenges(self, ctx: commands.Context):
-        """Toon de challenges van vandaag, je voortgang en de 'featured games' van vandaag."""
+        """Stuur je challenges van vandaag via DM (fallback: huidig kanaal)."""
         await self._ensure_challenge_set(ctx.guild)
         g = await self.config.guild(ctx.guild).all()
         chs = await self.config.guild(ctx.guild).challenges_today() or []
@@ -528,10 +495,9 @@ class ChallengesMixin:
         u = await self.config.user(ctx.author).all()
         total = int(u.get("challenge_total_secs", 0)) // 60
         per = u.get("challenge_per_game", {}) or {}
-        best = 0
-        best_game = "-"
+        best_game, best = "-", 0
         for name, secs in per.items():
-            if secs > best:
+            if int(secs) > best:
                 best = int(secs)
                 best_game = name
         best_mins = best // 60
@@ -539,26 +505,24 @@ class ChallengesMixin:
 
         lines = [
             f"🎯 **Challenges vandaag** (auto-claim: {'aan' if g.get('challenge_auto_enabled', True) else 'uit'})",
-            f"🎮 Featured: {', '.join(map(_short_game, featured)) if featured else '_geen ingesteld_'}"
+            f"🕹️ Featured: {', '.join(map(_short_game, featured)) if featured else '_geen ingesteld_'}"
         ]
         if not chs:
             lines.append("_Nog geen challenges — admin kan `!refreshchallenges` doen._")
         for ch in chs:
-            ctype = ch["type"]
-            target = int(ch["target"])
-            reward = int(ch["reward"])
+            t, target, reward = ch["type"], int(ch["target"]), int(ch["reward"])
             game = ch.get("game")
-            claimed = (str(ctx.author.id) in ch.get("claimed_users", [])) or (ctype.startswith("community") and ch.get("claimed_done"))
-            if ctype == "playtime_single":
+            claimed = (str(ctx.author.id) in ch.get("claimed_users", [])) or (t.startswith("community") and ch.get("claimed_done"))
+            if t == "playtime_single":
                 prog = f"{best_mins}/{target} min (beste game: {_short_game(best_game)})"
-            elif ctype == "playtime_total":
+            elif t == "playtime_total":
                 prog = f"{total}/{target} min"
-            elif ctype == "unique_games":
+            elif t == "unique_games":
                 prog = f"{uniq}/{target} games"
-            elif ctype == "playtime_single_game":
+            elif t == "playtime_single_game":
                 mins = int(per.get(game, 0)) // 60
                 prog = f"{mins}/{target} min in {_short_game(game)}"
-            elif ctype == "community_game_total":
+            elif t == "community_game_total":
                 mins = int(g.get('challenge_samegame_clock', {}).get(game, 0)) // 60
                 prog = f"server: {mins}/{target} min in {_short_game(game)}"
             else:  # community_total
@@ -566,33 +530,40 @@ class ChallengesMixin:
                 prog = f"server: {mins}/{target} min"
             lines.append(f"• {'✅' if claimed else '▫️'} **{ch['description']}** — 🎁 {reward} — {prog}")
 
-        await ctx.send("\n".join(lines))
+        text = "\n".join(lines)
+        sent_dm = False
+        try:
+            await ctx.author.send(text)
+            sent_dm = True
+        except Exception:
+            sent_dm = False
+        if not sent_dm:
+            await ctx.send(text)
+
         await self._challenge_autoclaim_tick(ctx.guild)
 
     @commands.command(name="refreshchallenges")
     @commands.has_permissions(administrator=True)
     async def refreshchallenges(self, ctx: commands.Context):
-        """(Admin) Verwijder en regenereer de challenges van vandaag (5 per dag, 1 game)."""
+        """(Admin) Her-genereer de challenge set (4 per dag, exact 1 game indien mogelijk)."""
         await self.config.guild(ctx.guild).challenge_set_ts.set(0.0)
         await self.config.guild(ctx.guild).challenges_today.set([])
         await self._ensure_challenge_set(ctx.guild)
         await ctx.send("🔁 Challenges opnieuw gegenereerd voor vandaag.")
         await self._challenge_autoclaim_tick(ctx.guild)
 
-    # legacy alias, handig tijdens testen
     @commands.command(name="regenchallenges")
     @commands.has_permissions(administrator=True)
     async def regenchallenges(self, ctx: commands.Context):
         """Alias van !refreshchallenges (admin)."""
         await self.refreshchallenges(ctx)
 
-    # -------------- Background loop --------------
+    # ---------------- loop ----------------
     async def _challenge_loop(self):
         await self.bot.wait_until_ready()
         while not self.bot.is_closed():
             try:
                 for guild in self.bot.guilds:
-                    # presence sessies die lopen: elke 2 min tick
                     now = _utc_ts()
                     sess = self._presence_sessions.get(guild.id, {})
                     for uid, state in list(sess.items()):
@@ -603,7 +574,6 @@ class ChallengesMixin:
                             if member:
                                 await self._accumulate_playtime(guild, member, game, 120)
                                 state["start"] = now
-                    # auto-claim check
                     await self._challenge_autoclaim_tick(guild)
             except Exception as e:
                 print(f"[BoozyBank Challenges] loop error: {e}")
