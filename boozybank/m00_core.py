@@ -80,8 +80,8 @@ class BoozyBank(RewardsMixin, QuizMixin, EconomyMixin, SettingsMixin, Challenges
             # ---- Challenges: algemene ----
             "challenge_auto_enabled": True,
             "challenge_daily_count": 3,
-            "challenge_reward_min": 25,
-            "challenge_reward_max": 100,
+            "challenge_reward_min": 20,
+            "challenge_reward_max": 60,
             "challenge_reset_hour": 4,
             "challenge_set_ts": 0.0,
             "challenges_today": [],
