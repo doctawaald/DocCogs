@@ -182,7 +182,7 @@ class ChallengesMixin:
             "Elke challenge: "
             "{type: one of ['playtime_single','playtime_total','unique_games','community_total','playtime_single_game','community_game_total'], "
             " target: integer (minutes for playtime/community, count for unique_games), "
-            " reward: integer Boo'z (20..120), "
+            " reward: integer Boo'z (20..60), "
             " description: NL, max 120 tekens, "
             " game?: string (vereist voor *_game types en MOET in featured lijst zitten). } "
             "Gebruik liefst 1-2 challenges die een *specifieke* game vereisen uit de featured lijst. "
