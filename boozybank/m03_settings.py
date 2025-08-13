@@ -1,7 +1,8 @@
-# [03] SETTINGS — kanalen/exclusions + rewards/interval + LLM + shop + toggles
+# [03] SETTINGS — kanalen/exclusions + rewards/interval + LLM + shop + toggles + Featured Games
 
 import discord
 from redbot.core import checks, commands
+
 
 class SettingsMixin:
     # ---------- Kanaal & exclusions ----------
@@ -206,16 +207,123 @@ class SettingsMixin:
             else:
                 await ctx.send("❌ Dat item bestaat niet.")
 
+    # ---------- Featured Games (voor challenges) ----------
+    @commands.command()
+    @checks.admin()
+    async def addfeatured(self, ctx: commands.Context, *, game: str):
+        """Voeg een game toe aan de featured-lijst (auto-modus gebruikt hieruit)."""
+        game = game.strip()
+        async with self.config.guild(ctx.guild).challenge_featured_list() as lst:
+            if game not in lst:
+                lst.append(game)
+        await ctx.send(f"🎮 Toegevoegd aan featured-lijst: **{game}**")
+
+    @commands.command()
+    @checks.admin()
+    async def rmfeatured(self, ctx: commands.Context, *, game: str):
+        """Verwijder een game uit de featured-lijst."""
+        game = game.strip()
+        async with self.config.guild(ctx.guild).challenge_featured_list() as lst:
+            if game in lst:
+                lst.remove(game)
+        await ctx.send(f"🗑️ Verwijderd uit featured-lijst: **{game}**")
+
+    @commands.command()
+    async def listfeatured(self, ctx: commands.Context):
+        """Toon de featured-lijst en de ingestelde modus."""
+        g = await self.config.guild(ctx.guild).all()
+        mode = g.get("challenge_featured_mode", "auto")
+        cnt = g.get("challenge_featured_count", 2)
+        lst = g.get("challenge_featured_list", []) or []
+        week = g.get("challenge_featured_week", {}) or {}
+        today = g.get("challenge_featured_today", []) or []
+        lines = [
+            f"🗂️ Featured modus: **{mode}** (auto-pick count: {cnt})",
+            f"• Lijst: {', '.join(lst) if lst else '_leeg_'}",
+            f"• Vandaag: {', '.join(today) if today else '_n.v.t._'}",
+            "• Week (manual): " + ", ".join(f"{k}:{'/'.join(v)}" for k, v in week.items()) if week else "• Week (manual): _niet ingesteld_",
+        ]
+        await ctx.send("\n".join(lines))
+
+    @commands.command()
+    @checks.admin()
+    async def setfeaturedmode(self, ctx: commands.Context, mode: str):
+        """Zet featured-modus: auto / manual."""
+        m = mode.lower()
+        if m not in ("auto", "manual"):
+            return await ctx.send("❌ Kies 'auto' of 'manual'.")
+        await self.config.guild(ctx.guild).challenge_featured_mode.set(m)
+        await ctx.send(f"⚙️ Featured-modus: **{m}**")
+
+    @commands.command()
+    @checks.admin()
+    async def setfeaturedcount(self, ctx: commands.Context, n: int):
+        """Auto-modus: hoeveel games per dag kiezen (1..3)."""
+        n = min(3, max(1, int(n)))
+        await self.config.guild(ctx.guild).challenge_featured_count.set(n)
+        await ctx.send(f"🔢 Featured auto-pick per dag: **{n}**")
+
+    @commands.command()
+    @checks.admin()
+    async def setfeaturedday(self, ctx: commands.Context, weekday: str, *, games_csv: str):
+        """
+        Manual-modus: stel games voor een weekdag in.
+        Voorbeeld: !setfeaturedday mon Fortnite, Rocket League
+        Weekdagen: mon,tue,wed,thu,fri,sat,sun
+        """
+        wk = weekday.lower()[:3]
+        if wk not in {"mon","tue","wed","thu","fri","sat","sun"}:
+            return await ctx.send("❌ Weekdag moet zijn: mon,tue,wed,thu,fri,sat,sun")
+        games = [g.strip() for g in games_csv.split(",") if g.strip()]
+        async with self.config.guild(ctx.guild).challenge_featured_week() as week:
+            week[wk] = games
+        await ctx.send(f"📅 {wk}: {', '.join(games) if games else '_leeg_'}")
+
+    # ---------- Challenge toggles ----------
+    @commands.command()
+    @checks.admin()
+    async def setchallengeauto(self, ctx: commands.Context, status: str):
+        """Auto-claim aan/uit: !setchallengeauto on/off"""
+        on = status.lower() in ("on", "aan", "yes", "true", "1")
+        await self.config.guild(ctx.guild).challenge_auto_enabled.set(on)
+        await ctx.send(f"⚙️ Challenge auto-claim: **{'aan' if on else 'uit'}**")
+
+    @commands.command()
+    @checks.admin()
+    async def setchallengecount(self, ctx: commands.Context, n: int):
+        """Aantal dagelijkse challenges (1-5): !setchallengecount <n>"""
+        n = min(5, max(1, int(n)))
+        await self.config.guild(ctx.guild).challenge_daily_count.set(n)
+        await ctx.send(f"🧮 Dagelijkse challenges: **{n}** (nieuwe set vanaf volgende reset of `!regenchallenges`)")
+
+    @commands.command()
+    @checks.admin()
+    async def setchallengereward(self, ctx: commands.Context, min_amount: int, max_amount: int):
+        """Range voor fallback-beloningen: !setchallengereward <min> <max>"""
+        a = max(1, int(min_amount))
+        b = max(a, int(max_amount))
+        await self.config.guild(ctx.guild).challenge_reward_min.set(a)
+        await self.config.guild(ctx.guild).challenge_reward_max.set(b)
+        await ctx.send(f"💰 Challenge fallback rewards: **{a}..{b}** Boo'z")
+
+    @commands.command()
+    @checks.admin()
+    async def setchallengeresethour(self, ctx: commands.Context, hour_utc: int):
+        """Dagelijkse challenge reset-uur (UTC): !setchallengeresethour <0-23>"""
+        h = min(23, max(0, int(hour_utc)))
+        await self.config.guild(ctx.guild).challenge_reset_hour.set(h)
+        await ctx.send(f"⏰ Challenge reset-uur: **{h}:00 UTC**")
+
     # ---------- Overzicht ----------
     @commands.command()
     async def boozysettings(self, ctx: commands.Context):
-        """Toon huidige BoozyBank-instellingen."""
+        """Toon huidige BoozyBank-instellingen (incl. featured games & challenges)."""
         g = await self.config.guild(ctx.guild).all()
         qch = ctx.guild.get_channel(g.get("quiz_channel")) if g.get("quiz_channel") else None
         excluded = [ctx.guild.get_channel(cid) for cid in g.get("excluded_channels", [])]
         exc_names = ", ".join(ch.mention for ch in excluded if ch) or "_geen_"
 
-        # Bouw shop-regels zonder *unpacking + or
+        # Shop-regels
         raw_shop = (g.get("shop", {}) or {})
         if raw_shop:
             shop_lines = [
@@ -224,6 +332,14 @@ class SettingsMixin:
             ]
         else:
             shop_lines = ["   - _leeg_"]
+
+        # Featured/Challenges
+        featured_mode = g.get("challenge_featured_mode", "auto")
+        featured_count = g.get("challenge_featured_count", 2)
+        featured_list = g.get("challenge_featured_list", []) or []
+        featured_today = g.get("challenge_featured_today", []) or []
+        reward_min = g.get("challenge_reward_min", 25)
+        reward_max = g.get("challenge_reward_max", 100)
 
         lines = [
             "🛠 **Boozy settings**",
@@ -245,5 +361,14 @@ class SettingsMixin:
             "• **Shop**:",
         ]
         lines.extend(shop_lines)
+
+        lines.extend([
+            "• **Challenges**:",
+            f"   - Auto-claim: {'aan' if g.get('challenge_auto_enabled', True) else 'uit'} | Daily count: {g.get('challenge_daily_count',3)} | Reset (UTC): {g.get('challenge_reset_hour',4)}:00",
+            f"   - Fallback reward-range: {reward_min}..{reward_max}",
+            f"   - Featured modus: {featured_mode} | auto-pick: {featured_count}",
+            f"   - Featured lijst: {', '.join(featured_list) if featured_list else '_leeg_'}",
+            f"   - Featured vandaag: {', '.join(featured_today) if featured_today else '_n.v.t._'}",
+        ])
 
         await ctx.send("\n".join(lines))
