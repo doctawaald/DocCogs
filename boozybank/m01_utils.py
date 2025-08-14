@@ -1,5 +1,5 @@
 # M01 --- UTILS -------------------------------------------------------------
-# Kleine hulpfuncties die door meerdere modules gebruikt worden.
+# Kleine hulpfuncties gedeeld door meerdere modules.
 # ---------------------------------------------------------------------------
 
 # M01#1 IMPORTS
@@ -37,4 +37,6 @@ def daily_seeded_choice(seq, seed_extra: str = ""):
     rnd = random.Random(seed)
     if not seq:
         return None
-    return rnd.choice(list(seq))
+    pool = list(seq)
+    rnd.shuffle(pool)
+    return pool[0]
