@@ -1,80 +1,77 @@
-# M02 --- ECONOMY -----------------------------------------------------------
+# ============================
+# m02_economy.py
+# ============================
 from __future__ import annotations
 from typing import List, Tuple
 import discord
 from redbot.core import commands, checks
-
-COIN = "🪙"
-
+from .m01_utils import COIN
 
 class EconomyMixin:
-    # M02#1 HELPERS
-    async def _get_balance(self, member: discord.Member) -> int:
+    # M02#1 helpers
+    async def eco_get(self, member: discord.Member) -> int:
         return int(await self.config.user(member).booz())
 
-    async def _set_balance(self, member: discord.Member, value: int) -> None:
-        await self.config.user(member).booz.set(max(0, int(value)))
+    async def eco_set(self, member: discord.Member, value: int) -> int:
+        v = max(0, int(value))
+        await self.config.user(member).booz.set(v)
+        return v
 
-    async def _add_balance(self, member: discord.Member, delta: int) -> int:
-        cur = await self._get_balance(member)
-        newv = max(0, cur + int(delta))
-        await self._set_balance(member, newv)
-        return newv
+    async def eco_add(self, member: discord.Member, delta: int) -> int:
+        cur = await self.eco_get(member)
+        return await self.eco_set(member, cur + int(delta))
 
-    # M02#2 BALANCE
-    @commands.command(aliases=["bal", "balance", "boozybal"])
+    # M02#2 public API (voor interne modules)
+    async def add_booz(self, guild: discord.Guild, member: discord.Member, amount: int, *, reason: str = "") -> int:
+        if member.bot:
+            return await self.eco_get(member)
+        g = await self.config.guild(guild).all()
+        if g.get("global_testmode", False):
+            try:
+                await member.send(f"🧪 Testmodus: geen Boo'z voor: {reason or 'actie'}")
+            except Exception:
+                pass
+            return await self.eco_get(member)
+        return await self.eco_add(member, amount)
+
+    # M02#3 commands
+    @commands.command(aliases=["bal","balance","boozybal"])
     async def booz(self, ctx: commands.Context, member: discord.Member | None = None):
-        """Toon je Boo'z saldo (of dat van iemand anders)."""
-        target = member or ctx.author
-        if target.bot:
+        tgt = member or ctx.author
+        if tgt.bot:
             return await ctx.send("🤖 Bots hebben geen Boo'z.")
-        bal = await self._get_balance(target)
-        who = "jouw" if target == ctx.author else f"{target.display_name}"
+        bal = await self.eco_get(tgt)
+        who = "jouw" if tgt == ctx.author else tgt.display_name
         await ctx.send(f"{COIN} **Boo'z** — {who}: **{bal}**")
 
-    # M02#3 LEADERBOARD
-    @commands.command(aliases=["leaderboard", "boozytop"])
+    @commands.command(aliases=["leaderboard","boozytop"])
     async def top(self, ctx: commands.Context, limit: int = 10):
-        """Toon de top Boo'z in deze server (default 10)."""
         limit = max(1, min(25, int(limit)))
         rows: List[Tuple[int, discord.Member]] = []
         for m in ctx.guild.members:
             if m.bot:
                 continue
-            bal = await self._get_balance(m)
-            if bal > 0:
-                rows.append((bal, m))
-        if not rows:
-            return await ctx.send("📉 Nog geen Boo'z data.")
+            bal = await self.eco_get(m)
+            rows.append((bal, m))
         rows.sort(key=lambda x: x[0], reverse=True)
         lines = [f"🏆 **Leaderboard (top {limit})**"]
-        for i, (bal, m) in enumerate(rows[:limit], start=1):
+        for i, (bal, m) in enumerate(rows[:limit], 1):
             lines.append(f"{i}. {m.display_name} — {COIN} {bal}")
-        await ctx.send("\n".join(lines))
+        await ctx.send("\n".join(lines) if len(lines) > 1 else "📉 Nog geen data.")
 
-    # M02#4 ADMIN GRANTS/TAKES
     @commands.command()
     @checks.admin()
     async def boozygive(self, ctx: commands.Context, member: discord.Member, amount: int):
-        """Geef Boo'z aan een gebruiker."""
         if member.bot:
-            return await ctx.send("🤖 Bots kunnen geen Boo'z krijgen.")
-        amount = int(amount)
-        if amount <= 0:
-            return await ctx.send("Geef een positief aantal.")
-        newv = await self._add_balance(member, amount)
-        await ctx.send(f"✅ Gaf **{member.display_name}** {COIN} {amount}. Nieuw saldo: {newv}")
+            return await ctx.send("🤖 Bots hebben geen Boo'z.")
+        newv = await self.eco_add(member, max(0, int(amount)))
+        await ctx.send(f"✅ Gaf **{member.display_name}** {COIN} {int(amount)} → saldo {newv}")
 
     @commands.command()
     @checks.admin()
     async def boozytake(self, ctx: commands.Context, member: discord.Member, amount: int):
-        """Neem Boo'z af van een gebruiker."""
         if member.bot:
             return await ctx.send("🤖 Bots hebben geen Boo'z.")
-        amount = int(amount)
-        if amount <= 0:
-            return await ctx.send("Geef een positief aantal.")
-        cur = await self._get_balance(member)
-        newv = max(0, cur - amount)
-        await self._set_balance(member, newv)
-        await ctx.send(f"✅ Nam {COIN} {amount} af van **{member.display_name}**. Nieuw saldo: {newv}")
+        cur = await self.eco_get(member)
+        newv = await self.eco_set(member, max(0, cur - int(amount)))
+        await ctx.send(f"✅ Nam {COIN} {int(amount)} af van **{member.display_name}** → saldo {newv}")
