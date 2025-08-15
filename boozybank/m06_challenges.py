@@ -578,6 +578,22 @@ class ChallengesMixin:
                         ch.setdefault("claimed_users", []).append(uid)
                         changed = True
 
+            # Server-brede voortgang voor community-challenges
+            if ctype == "community_total":
+                tot = int(g.get("server_together_secs", 0)) // 60
+                if tot >= target and not ch.get("claimed_done"):
+                    await self._announce(guild, f"🎉 Community challenge gehaald: {ch['description']}!")
+                    ch["claimed_done"] = True
+                    changed = True
+            elif ctype == "community_game_total":
+                same = (g.get("samegame_together_secs", {}) or {})
+                tot = int(same.get(game, 0)) // 60
+                if tot >= target and not ch.get("claimed_done"):
+                    pretty = _short_game(game) or "deze game"
+                    await self._announce(guild, f"🎉 Community challenge gehaald: Speel samen {target} min in {pretty} vandaag!")
+                    ch["claimed_done"] = True
+                    changed = True
+
         if changed:
             await self.config.guild(guild).challenges_today.set(chs)
 
@@ -691,6 +707,31 @@ class ChallengesMixin:
     async def boozychallenges(self, ctx: commands.Context):
         """Alias: zelfde gedrag als !boozydailychallenges."""
         await self.boozydailychallenges(ctx)
+
+    @commands.command(name="boozychallengeprogress")
+    async def boozychallengeprogress(self, ctx: commands.Context):
+        """
+        Toon server-brede voortgang voor de community-challenges.
+        """
+        await self._ensure_challenge_set(ctx.guild)
+        chs = await self.config.guild(ctx.guild).challenges_today() or []
+        g = await self.config.guild(ctx.guild).all()
+
+        lines = ["📊 **Challenge voortgang**"]
+        for ch in chs:
+            ctype = ch["type"]
+            target = int(ch["target"])
+            if ctype == "community_total":
+                prog = int(g.get("server_together_secs", 0)) // 60
+                lines.append(f"• {ch['description']} — {prog}/{target} min samen")
+            elif ctype == "community_game_total":
+                game = ch.get("game")
+                same = (g.get("samegame_together_secs", {}) or {})
+                prog = int(same.get(game, 0)) // 60
+                pretty = _short_game(game) if game else 'deze game'
+                lines.append(f"• {ch['description']} — {prog}/{target} min samen in {pretty}")
+        await ctx.send("\n".join(lines))
+        await self._challenge_autoclaim_tick(ctx.guild)
 
     @commands.command(name="refreshchallenges")
     @commands.has_permissions(administrator=True)
