@@ -1,4 +1,4 @@
-from .botkicker import BotKicker
+from .joinsound import JoinSound
 
 async def setup(bot):
-    await bot.add_cog(BotKicker(bot))
+    await bot.add_cog(JoinSound(bot))
