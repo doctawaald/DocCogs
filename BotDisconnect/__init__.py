@@ -1,4 +1,4 @@
-from .joinsound import JoinSound
+from .botdisconnect import BotDisconnect
 
 async def setup(bot):
-    await bot.add_cog(JoinSound(bot))
+    await bot.add_cog(BotDisconnect(bot))
