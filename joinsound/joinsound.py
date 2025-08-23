@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
@@ -19,6 +20,7 @@ class GuildState:
     last_connected_channel_id: Optional[int] = None
     session: int = 0
     disconnect_task: Optional[asyncio.Task] = None
+    connect_cooldown_until: float = 0.0  # epoch seconds to throttle reconnects after a failure
 
 class JoinSound(commands.Cog):
     """Speelt een join sound wanneer een user een voice channel joint."""
@@ -130,7 +132,7 @@ class JoinSound(commands.Cog):
             await self.config.guild(ctx.guild).enforce_duration.set(val)
             await ctx.send(f"⏱️ Duurcontrole **{'aan' if val else 'uit'}**.")
 
-        # Backwards compat: oude 'boost' keys afvangen en uitleg geven
+        # Backwards compat: boost keys afvangen en uitleggen
         elif key in ("boost", "gain", "boostdb", "gaindb"):
             await ctx.send("ℹ️ `boost` is uitgefaseerd. Gebruik enkel `volume` (0.0–2.0).")
 
@@ -256,6 +258,11 @@ class JoinSound(commands.Cog):
             if after.channel is None or after.channel != joined_channel:
                 return
 
+            # Respecteer cooldown na mislukte connect (bv. 4006)
+            now = time.time()
+            if now < state.connect_cooldown_until:
+                return
+
             vc: Optional[discord.VoiceClient] = guild.voice_client
             if vc and vc.is_connected():
                 if vc.channel.id == joined_channel.id:
@@ -274,6 +281,8 @@ class JoinSound(commands.Cog):
             state.session += 1
             vc = await self._connect_once(joined_channel)
             if not vc:
+                # Stel een korte cooldown in (voorkom dubbel connecten/handshakes)
+                state.connect_cooldown_until = time.time() + 3.0
                 return
 
             state.last_connected_channel_id = joined_channel.id
@@ -395,6 +404,11 @@ class JoinSound(commands.Cog):
 
         state = self._state(guild)
         async with state.lock:
+            # Respecteer cooldown
+            now = time.time()
+            if now < state.connect_cooldown_until:
+                return
+
             vc = guild.voice_client
             if vc and vc.is_connected():
                 if vc.channel.id != channel.id:
@@ -408,6 +422,7 @@ class JoinSound(commands.Cog):
             if not (vc and vc.is_connected()):
                 vc = await self._connect_once(channel)
                 if not vc:
+                    state.connect_cooldown_until = time.time() + 3.0
                     return
 
             played = await self._safe_play(vc, conf)
