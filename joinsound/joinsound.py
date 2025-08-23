@@ -12,7 +12,8 @@ from redbot.core.bot import Red
 from redbot.core.data_manager import cog_data_path
 
 FFMPEG_BEFORE = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
-VALID_EXTS = (".mp3", ".wav", ".ogg", ".m4a", ".webm")
+VALID_EXTS = (".mp3", ".wav")
+
 
 @dataclass
 class GuildState:
@@ -21,6 +22,7 @@ class GuildState:
     session: int = 0
     disconnect_task: Optional[asyncio.Task] = None
     connect_cooldown_until: float = 0.0  # epoch seconds
+
 
 class JoinSound(commands.Cog):
     """Join sound bij voice-joins, met per-user overrides, optionele self-serve en robuuste voice-handling."""
@@ -35,7 +37,7 @@ class JoinSound(commands.Cog):
         # guild default sound
         "source": "url",          # 'url' of 'file'
         "url": "",
-        "file_name": "",          # relatieve bestandsnaam in cog data dir
+        "file_name": "",          # relatieve bestandsnaam onder cog data dir (nu altijd users/..)
 
         # volume & limieten
         "volume": 0.6,            # fader; standaard 0.0–2.0, plafond via max_volume
@@ -121,6 +123,14 @@ class JoinSound(commands.Cog):
     async def _set(self, ctx: commands.Context, key: str, *, value: str):
         key = key.lower()
         if key == "url":
+            # switch naar URL: ruim eventuele oude file op
+            cfg = await self.config.guild(ctx.guild).all()
+            old_rel = (cfg.get("file_name") or "").strip()
+            if old_rel:
+                old_path = cog_data_path(self) / old_rel
+                with contextlib.suppress(Exception):
+                    if old_path.is_file():
+                        old_path.unlink()
             await self.config.guild(ctx.guild).url.set(value.strip())
             await self.config.guild(ctx.guild).source.set("url")
             return await ctx.send(f"URL ingesteld en bron op url gezet:\n`{value.strip()}`")
@@ -266,20 +276,29 @@ class JoinSound(commands.Cog):
             )
         )
 
-    # ---------- top-level guild-default upload ----------
+    # ---------- top-level guild-default upload (altijd users/) ----------
 
     @joinsound.command(name="upload")
     async def _upload(self, ctx: commands.Context, *, name: Optional[str] = None):
-        """Upload een MP3/WAV/OGG/M4A/WEBM als guild-default joinsound (met bijlage)."""
+        """Upload een MP3/WAV als guild-default joinsound (met bijlage)."""
         cfg = await self.config.guild(ctx.guild).all()
         if not ctx.message.attachments:
-            return await ctx.send("Voeg een MP3/WAV/OGG/M4A/WEBM bijlage toe.")
+            return await ctx.send("Voeg een **MP3/WAV** bijlage toe.")
 
         att = ctx.message.attachments[0]
         lower = att.filename.lower()
         if not lower.endswith(VALID_EXTS):
-            return await ctx.send("Ondersteunde extensies: .mp3 .wav .ogg .m4a .webm")
+            return await ctx.send("Ondersteunde extensies: **.mp3 .wav**")
 
+        # bestáánde guild-default opruimen indien file
+        old_rel = (cfg.get("file_name") or "").strip()
+        if old_rel:
+            old_path = cog_data_path(self) / old_rel
+            with contextlib.suppress(Exception):
+                if old_path.is_file():
+                    old_path.unlink()
+
+        # size-limit
         limit_bytes = int(float(cfg["max_filesize_mb"]) * 1024 * 1024)
         if att.size and att.size > limit_bytes:
             return await ctx.send(f"Bestand groter dan {cfg['max_filesize_mb']:.1f} MB.")
@@ -290,13 +309,17 @@ class JoinSound(commands.Cog):
         if not safe.endswith(ext):
             safe += ext
 
-        data_dir: Path = cog_data_path(self)
-        target = data_dir / safe
+        data_dir: Path = cog_data_path(self) / "users"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        target_name = f"guild_{ctx.guild.id}_{safe}"
+        target = data_dir / target_name
+
         try:
             await att.save(target)
         except Exception as e:
             return await ctx.send(f"Opslaan mislukt: {type(e).__name__}: {e}")
 
+        # duurcheck
         max_s = int(cfg.get("max_duration_s", 0))
         if max_s and bool(cfg.get("enforce_duration", True)):
             dur = await self._probe_duration(target)
@@ -307,9 +330,9 @@ class JoinSound(commands.Cog):
                     target.unlink(missing_ok=True)
                 return await ctx.send(f"Clip te lang: {dur:.2f}s > {max_s}s.")
 
-        await self.config.guild(ctx.guild).file_name.set(target.name)
+        await self.config.guild(ctx.guild).file_name.set(f"users/{target_name}")
         await self.config.guild(ctx.guild).source.set("file")
-        await ctx.send(f"Guild-default opgeslagen als `{target.name}` en bron op file gezet. Test met: `[p]joinsound test`")
+        await ctx.send(f"Guild-default opgeslagen als `users/{target_name}` en bron op file gezet. Test met: `[p]joinsound test`")
 
     # ---------- per-user (admin) ----------
 
@@ -321,6 +344,7 @@ class JoinSound(commands.Cog):
 
     @_usergroup.command(name="url")
     async def _user_url(self, ctx: commands.Context, member: discord.Member, url: str):
+        # als er een oude file was, opruimen
         async with self.config.guild(ctx.guild).user_sounds() as m:
             prev = m.get(str(member.id))
             if prev and prev.get("kind") == "file":
@@ -387,7 +411,7 @@ class JoinSound(commands.Cog):
         await self._play_in_channel(ctx.guild, ctx.author.voice.channel, invoked=True, override=override)
         await ctx.message.add_reaction("✅")
 
-    # ---------- self-serve member commands ----------
+    # ---------- SELF-SERVE member commands ----------
 
     @commands.group(name="mysound")
     @commands.guild_only()
@@ -457,16 +481,16 @@ class JoinSound(commands.Cog):
         await self._play_in_channel(ctx.guild, ctx.author.voice.channel, invoked=True, override=override)
         await ctx.message.add_reaction("✅")
 
-    # -------------------- shared upload handler --------------------
+    # -------------------- shared upload handler (altijd users/, overschrijft) --------------------
 
     async def _handle_member_upload(self, ctx: commands.Context, member: discord.Member, name: Optional[str]):
         cfg = await self.config.guild(ctx.guild).all()
         if not ctx.message.attachments:
-            return await ctx.send("Voeg een MP3/WAV/OGG/M4A/WEBM bijlage toe.")
+            return await ctx.send("Voeg een **MP3/WAV** bijlage toe.")
         att = ctx.message.attachments[0]
         lower = att.filename.lower()
         if not lower.endswith(VALID_EXTS):
-            return await ctx.send("Ondersteunde extensies: .mp3 .wav .ogg .m4a .webm")
+            return await ctx.send("Ondersteunde extensies: **.mp3 .wav**")
 
         limit_bytes = int(float(cfg["max_filesize_mb"]) * 1024 * 1024)
         if att.size and att.size > limit_bytes:
@@ -477,6 +501,12 @@ class JoinSound(commands.Cog):
         ext = Path(lower).suffix
         if not safe.endswith(ext):
             safe += ext
+
+        # bestaande per-user file opruimen (overschrijf policy)
+        async with self.config.guild(ctx.guild).user_sounds() as m:
+            prev = m.get(str(member.id))
+            if prev and prev.get("kind") == "file":
+                self._try_delete_rel(prev.get("path"))
 
         data_dir: Path = cog_data_path(self) / "users"
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -500,9 +530,6 @@ class JoinSound(commands.Cog):
 
         rel_path = f"users/{target_name}"
         async with self.config.guild(ctx.guild).user_sounds() as m:
-            prev = m.get(str(member.id))
-            if prev and prev.get("kind") == "file":
-                self._try_delete_rel(prev.get("path"))
             m[str(member.id)] = {"kind": "file", "path": rel_path, "disabled": False}
         await ctx.send(f"File ingesteld voor {'jou' if member == ctx.author else member.mention}: `{target.name}`")
 
@@ -561,6 +588,7 @@ class JoinSound(commands.Cog):
             if len(humans) < conf["min_humans"]:
                 return
 
+        # kies sound (per-user override eerst, dan guild default)
         override = None
         if conf.get("prefer_user_overrides", True):
             override = self._resolve_user_override(guild, conf, member)
