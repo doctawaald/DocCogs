@@ -1,61 +1,44 @@
-from redbot.core import commands, Config
+from redbot.core import commands
 import discord
+import asyncio
+import traceback
+
 
 class BotDisconnect(commands.Cog):
-    """Auto-disconnect voice when no human users remain (bots don't count).
-
-    - Safe disconnect: disables voice auto-reconnect before disconnecting.
-    - Won't fight other cogs; only acts when the channel has 0 human members.
-    """
+    """Disconnect all bots if no humans are left in a VC."""
 
     def __init__(self, bot):
         self.bot = bot
-        self.config = Config.get_conf(self, identifier=987654321)
-        default_guild = {"enabled": True}
-        self.config.register_guild(**default_guild)
         print("✅ BotDisconnect loaded (safe VC cleanup).")
 
-    # Enable/disable toggle
-    @commands.command()
-    async def bdc_toggle(self, ctx):
-        """Toggle BotDisconnect on/off (bot owner only)."""
-        if not await self.bot.is_owner(ctx.author):
-            return await ctx.send("❌ Only the bot owner can toggle this.")
-        enabled = await self.config.guild(ctx.guild).enabled()
-        await self.config.guild(ctx.guild).enabled.set(not enabled)
-        await ctx.send(f"🧹 BotDisconnect is now {'enabled' if not enabled else 'disabled'}.")
-
     @commands.Cog.listener()
-    async def on_voice_state_update(self, member, before, after):
-        # Only act when something meaningful changed
+    async def on_voice_state_update(self, member: discord.Member, before, after):
+        # We only care if someone leaves or moves
         if before.channel == after.channel:
             return
 
-        guild = (before.channel or after.channel).guild if (before.channel or after.channel) else None
-        if guild is None:
-            return
-        if not await self.config.guild(guild).enabled():
-            return
-
-        vc = guild.voice_client
-        if not vc:
-            return  # nothing to do
-
-        # Target channel to inspect: the one the bot is (or was) in
-        channel = vc.channel
-        if not channel:
+        # If a channel lost a member, check that channel
+        channel = before.channel
+        if channel is None:
             return
 
-        # Count humans (exclude bots)
-        human_count = sum(1 for m in channel.members if not m.bot)
+        # Quick settle: sometimes events fire in bursts
+        await asyncio.sleep(1.0)
 
-        # If no human users remain, cleanly disconnect
-        if human_count == 0:
-            try:
-                if hasattr(vc, "_should_reconnect"):
-                    vc._should_reconnect = False
-                await vc.disconnect(force=True)
-                print(f"🧹 BotDisconnect: disconnected from {channel} in guild {guild.id} (no humans).")
-            except Exception as e:
-                print(f"⚠️ BotDisconnect error: {e}")
+        humans = [m for m in channel.members if not m.bot]
+        if humans:
+            return  # Still at least one human
 
+        # No humans left: disconnect bots
+        print(f"🔌 No humans in {channel.name} → disconnecting all bots.")
+        for bot_member in [m for m in channel.members if m.bot]:
+            vc = bot_member.guild.voice_client
+            if vc and vc.is_connected():
+                try:
+                    if hasattr(vc, "_should_reconnect"):
+                        vc._should_reconnect = False
+                    await vc.disconnect(force=True)
+                    print(f"✅ Disconnected {bot_member.display_name} from {channel.name}")
+                except Exception as e:
+                    print(f"⚠️ Error disconnecting {bot_member.display_name}: {e}")
+                    traceback.print_exc()
