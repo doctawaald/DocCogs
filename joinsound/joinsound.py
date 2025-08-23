@@ -1,45 +1,3 @@
-# JoinSound Cog v3.5.0 — Self‑Serve Build (full files)
-
-Below are **all files** for a drop‑in update that adds **self‑serve (members choose their own sound)** while keeping all existing features (per‑user by admin, volume cap, overdrive/limiter, upload limits, connect cooldown, session guard, 2–600s timeout, etc.).
-
----
-
-## joinsound/**init**.py
-
-```python
-from redbot.core import bot
-from .joinsound import JoinSound
-
-async def setup(bot: bot.Red) -> None:
-    await bot.add_cog(JoinSound(bot))
-```
-
----
-
-## joinsound/info.json
-
-```json
-{
-  "author": ["dOCTAWAALd & ChatGPT"],
-  "install_msg": "JoinSound geladen. Guild-default upload via `[p]joinsound upload` (≤1 MB, standaard ≤6s). Per-user via admin: `[p]joinsound user upload|url`. Optioneel self-serve (leden): admin zet aan met `[p]joinsound selfserve enable` en members gebruiken `[p]mysound upload|url`. Volume tot 2.0 (plafond instelbaar via `maxvol`).",
-  "name": "JoinSound",
-  "short": "Join sound met per-user & optionele self-serve, robuuste voice-handling.",
-  "description": "Per-user upload/URL (admin) + optionele self-serve (leden) met role-gating, snelle admin-controls (disable/remove/test/list/show), per-guild lock, session-guard, connect-cooldown, volumeplafond (standaard 2.0, instelbaar tot 4.0), uploadlimieten en nette connect/disconnect. Auto-disconnect clamp 2–600s.",
-  "version": "3.5.0",
-  "min_bot_version": "3.5.0",
-  "hidden": false,
-  "disabled": false,
-  "required_cogs": [],
-  "requirements": [],
-  "tags": ["voice", "audio", "joinsound", "utilities"]
-}
-```
-
----
-
-## joinsound/joinsound.py
-
-```python
 import asyncio
 import contextlib
 import re
@@ -96,10 +54,10 @@ class JoinSound(commands.Cog):
         # per-user: user_id(str) -> {"kind": "file"|"url", "path"|"url": str, "disabled": bool}
         "user_sounds": {},
 
-        # SELF-SERVE (members)
-        "selfserve_enabled": False,        # admin toggle
-        "selfserve_roles": [],             # allow-list van role ids (leeg = iedereen)
-        "selfserve_allow_url": True        # toestaan dat leden ook URL i.p.v. upload zetten
+        # self-serve (members)
+        "selfserve_enabled": False,
+        "selfserve_roles": [],       # allow-list role ids (leeg = iedereen)
+        "selfserve_allow_url": True
     }
 
     def __init__(self, bot: Red):
@@ -107,14 +65,11 @@ class JoinSound(commands.Cog):
         self.config = Config.get_conf(self, identifier=0xB005EE51)
         self.config.register_guild(**self.default_guild)
         self._guild_states: Dict[int, GuildState] = {}
-        try:
-            base = cog_data_path(self)
-            base.mkdir(parents=True, exist_ok=True)
-            (base / "users").mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
+        base = cog_data_path(self)
+        base.mkdir(parents=True, exist_ok=True)
+        (base / "users").mkdir(parents=True, exist_ok=True)
 
-    # -------------------- helpers: state --------------------
+    # -------------------- state helper --------------------
 
     def _state(self, guild: discord.Guild) -> GuildState:
         gs = self._guild_states.get(guild.id)
@@ -123,30 +78,28 @@ class JoinSound(commands.Cog):
             self._guild_states[guild.id] = gs
         return gs
 
-    # -------------------- generic checks --------------------
+    # -------------------- self-serve runtime check --------------------
 
-    def selfserve_check(self):
-        async def predicate(ctx: commands.Context) -> bool:
-            if not ctx.guild:
-                return False
-            cfg = await self.config.guild(ctx.guild).all()
-            if not cfg.get("selfserve_enabled", False):
-                await ctx.send("⚠️ Self-serve staat uit. Vraag een admin om `joinsound selfserve enable`.")
-                return False
-            # Admins mogen altijd
-            if ctx.author.guild_permissions.manage_guild:
-                return True
-            roles: List[int] = list(cfg.get("selfserve_roles", []) or [])
-            if not roles:
-                return True  # iedereen mag
-            author_role_ids = {r.id for r in getattr(ctx.author, 'roles', [])}
-            if any(rid in author_role_ids for rid in roles):
-                return True
-            await ctx.send("🚫 Je hebt geen rol die self-serve toestaat.")
+    async def _check_selfserve(self, ctx: commands.Context) -> bool:
+        if not ctx.guild:
             return False
-        return commands.check(predicate)
+        cfg = await self.config.guild(ctx.guild).all()
+        if not cfg.get("selfserve_enabled", False):
+            await ctx.send("Self-serve staat uit. Vraag een admin om `joinsound selfserve enable`.")
+            return False
+        # Admins mogen altijd
+        if ctx.author.guild_permissions.manage_guild:
+            return True
+        roles_cfg: List[int] = list(cfg.get("selfserve_roles", []) or [])
+        if not roles_cfg:
+            return True  # iedereen mag
+        author_role_ids = {r.id for r in getattr(ctx.author, "roles", [])}
+        if any(rid in author_role_ids for rid in roles_cfg):
+            return True
+        await ctx.send("Je hebt geen rol die self-serve toestaat.")
+        return False
 
-    # -------------------- commands: admin root --------------------
+    # -------------------- admin root --------------------
 
     @commands.group(name="joinsound")
     @commands.admin_or_permissions(manage_guild=True)
@@ -157,12 +110,12 @@ class JoinSound(commands.Cog):
     @joinsound.command(name="enable")
     async def _enable(self, ctx: commands.Context):
         await self.config.guild(ctx.guild).enabled.set(True)
-        await ctx.send("✅ JoinSound **ingeschakeld**.")
+        await ctx.send("JoinSound ingeschakeld.")
 
     @joinsound.command(name="disable")
     async def _disable(self, ctx: commands.Context):
         await self.config.guild(ctx.guild).enabled.set(False)
-        await ctx.send("⏸️ JoinSound **uitgeschakeld**.")
+        await ctx.send("JoinSound uitgeschakeld.")
 
     @joinsound.command(name="set")
     async def _set(self, ctx: commands.Context, key: str, *, value: str):
@@ -170,9 +123,9 @@ class JoinSound(commands.Cog):
         if key == "url":
             await self.config.guild(ctx.guild).url.set(value.strip())
             await self.config.guild(ctx.guild).source.set("url")
-            await ctx.send(f"🔗 URL ingesteld en bron op **url** gezet:\n`{value.strip()}`")
+            return await ctx.send(f"URL ingesteld en bron op url gezet:\n`{value.strip()}`")
 
-        elif key in ("volume", "vol"):
+        if key in ("volume", "vol"):
             try:
                 vol = float(value)
             except ValueError:
@@ -181,58 +134,58 @@ class JoinSound(commands.Cog):
             maxvol = float(cfg.get("max_volume", 2.0))
             vol = max(0.0, min(maxvol, vol))
             await self.config.guild(ctx.guild).volume.set(vol)
-            await ctx.send(f"🔊 Volume op **{vol:.2f}** gezet. (Plafond {maxvol:.1f})")
+            return await ctx.send(f"Volume op {vol:.2f} gezet (plafond {maxvol:.1f}).")
 
-        elif key in ("maxvol", "max_volume"):
+        if key in ("maxvol", "max_volume"):
             try:
                 mv = float(value)
             except ValueError:
-                return await ctx.send("Geef een getal **1.0–4.0**.")
+                return await ctx.send("Geef een getal 1.0–4.0.")
             mv = max(1.0, min(4.0, mv))
             cur = await self.config.guild(ctx.guild).volume()
             if cur > mv:
                 await self.config.guild(ctx.guild).volume.set(mv)
             await self.config.guild(ctx.guild).max_volume.set(mv)
-            await ctx.send(f"🧢 Max volume-plafond op **{mv:.1f}x** gezet.")
+            return await ctx.send(f"Max volume-plafond op {mv:.1f}x gezet.")
 
-        elif key in ("overdrive", "od"):
+        if key in ("overdrive", "od"):
             v = value.strip().lower()
-            val = v in {"1","true","yes","on","aan"}
+            val = v in {"1", "true", "yes", "on", "aan"}
             await self.config.guild(ctx.guild).overdrive.set(val)
-            await ctx.send(f"⚡ Overdrive **{'aan' if val else 'uit'}** (pre-gain boven 2.0).")
+            return await ctx.send(f"Overdrive {'aan' if val else 'uit'}.")
 
-        elif key in ("limiter", "limit"):
+        if key in ("limiter", "limit"):
             v = value.strip().lower()
-            val = v in {"1","true","yes","on","aan"}
+            val = v in {"1", "true", "yes", "on", "aan"}
             await self.config.guild(ctx.guild).limiter.set(val)
-            await ctx.send(f"🛡️ Limiter **{'aan' if val else 'uit'}**.")
+            return await ctx.send(f"Limiter {'aan' if val else 'uit'}.")
 
-        elif key in ("timeout", "autodisconnect", "auto_disconnect_s"):
+        if key in ("timeout", "autodisconnect", "auto_disconnect_s"):
             try:
                 secs = int(value)
             except ValueError:
                 return await ctx.send("Geef een geheel aantal seconden.")
-            secs = max(2, min(600, secs))  # 2–600s
+            secs = max(2, min(600, secs))
             await self.config.guild(ctx.guild).auto_disconnect_s.set(secs)
-            await ctx.send(f"⏱️ Auto-disconnect op **{secs}s** gezet.")
+            return await ctx.send(f"Auto-disconnect op {secs}s gezet.")
 
-        elif key == "source":
+        if key == "source":
             v = value.strip().lower()
             if v not in {"url", "file"}:
-                return await ctx.send("Bron moet **url** of **file** zijn.")
+                return await ctx.send("Bron moet url of file zijn.")
             await self.config.guild(ctx.guild).source.set(v)
-            await ctx.send(f"🎚️ Bron gezet op **{v}**.")
+            return await ctx.send(f"Bron gezet op {v}.")
 
-        elif key in ("maxsize", "max_filesize_mb"):
+        if key in ("maxsize", "max_filesize_mb"):
             try:
                 mb = float(value)
             except ValueError:
                 return await ctx.send("Geef MB (0.2–8).")
             mb = max(0.2, min(8.0, mb))
             await self.config.guild(ctx.guild).max_filesize_mb.set(mb)
-            await ctx.send(f"📦 Max uploadgrootte op **{mb:.1f} MB** gezet.")
+            return await ctx.send(f"Max uploadgrootte op {mb:.1f} MB gezet.")
 
-        elif key in ("maxdur", "max_duration_s"):
+        if key in ("maxdur", "max_duration_s"):
             try:
                 sec = int(value)
             except ValueError:
@@ -240,27 +193,27 @@ class JoinSound(commands.Cog):
             if sec != 0:
                 sec = max(2, min(30, sec))
             await self.config.guild(ctx.guild).max_duration_s.set(sec)
-            await ctx.send(f"⏱️ Max duur op **{sec}s** gezet (0 = uit).")
+            return await ctx.send(f"Max duur op {sec}s gezet (0 = uit).")
 
-        elif key in ("enforcedur", "enforce_duration"):
+        if key in ("enforcedur", "enforce_duration"):
             v = value.strip().lower()
-            val = v in {"1","true","yes","on","aan"}
+            val = v in {"1", "true", "yes", "on", "aan"}
             await self.config.guild(ctx.guild).enforce_duration.set(val)
-            await ctx.send(f"⏱️ Duurcontrole **{'aan' if val else 'uit'}**.")
+            return await ctx.send(f"Duurcontrole {'aan' if val else 'uit'}.")
 
-        elif key in ("preferuser", "prefer_user_overrides"):
+        if key in ("preferuser", "prefer_user_overrides"):
             v = value.strip().lower()
-            val = v in {"1","true","yes","on","aan"}
+            val = v in {"1", "true", "yes", "on", "aan"}
             await self.config.guild(ctx.guild).prefer_user_overrides.set(val)
-            await ctx.send(f"👤 Per-user sound **{'heeft voorrang' if val else 'heeft geen voorrang'}**.")
+            return await ctx.send(f"Per-user override {'heeft voorrang' if val else 'heeft geen voorrang'}.")
 
-        else:
-            await ctx.send(
-                "Keys: `url`, `volume`, `maxvol`, `overdrive on|off`, `limiter on|off`, "
-                "`timeout`, `source (url|file)`, `maxsize`, `maxdur`, `enforcedur`, `preferuser on|off`."
-            )
+        await ctx.send(
+            "Keys: url, volume, maxvol, overdrive on|off, limiter on|off, "
+            "timeout, source (url|file), maxsize, maxdur, enforcedur, preferuser on|off."
+        )
 
     # ---------- self-serve admin controls ----------
+
     @joinsound.group(name="selfserve")
     async def _selfserve(self, ctx: commands.Context):
         """Self-serve (members) beheren."""
@@ -269,73 +222,67 @@ class JoinSound(commands.Cog):
     @_selfserve.command(name="enable")
     async def _ss_enable(self, ctx: commands.Context):
         await self.config.guild(ctx.guild).selfserve_enabled.set(True)
-        await ctx.send("✅ Self-serve **ingeschakeld**. Leden kunnen nu `mysound` gebruiken.")
+        await ctx.send("Self-serve ingeschakeld. Leden kunnen nu `mysound` gebruiken.")
 
     @_selfserve.command(name="disable")
     async def _ss_disable(self, ctx: commands.Context):
         await self.config.guild(ctx.guild).selfserve_enabled.set(False)
-        await ctx.send("⏸️ Self-serve **uitgeschakeld**.")
+        await ctx.send("Self-serve uitgeschakeld.")
 
     @_selfserve.command(name="allowurl")
     async def _ss_allowurl(self, ctx: commands.Context, state: str):
-        v = state.strip().lower()
-        val = v in {"1","true","yes","on","aan"}
+        val = state.strip().lower() in {"1", "true", "yes", "on", "aan"}
         await self.config.guild(ctx.guild).selfserve_allow_url.set(val)
-        await ctx.send(f"🔗 Self-serve URLs **{'toegestaan' if val else 'geblokkeerd'}**.")
+        await ctx.send(f"Self-serve URLs {'toegestaan' if val else 'geblokkeerd'}.")
 
     @_selfserve.command(name="addrole")
     async def _ss_addrole(self, ctx: commands.Context, role: discord.Role):
         async with self.config.guild(ctx.guild).selfserve_roles() as roles:
-            roles = roles or []
             if role.id not in roles:
                 roles.append(role.id)
-        await ctx.send(f"👥 Rol toegevoegd aan self-serve allowlist: **{role.name}**.")
+        await ctx.send(f"Rol toegevoegd aan self-serve allowlist: {role.name}.")
 
     @_selfserve.command(name="delrole")
     async def _ss_delrole(self, ctx: commands.Context, role: discord.Role):
         async with self.config.guild(ctx.guild).selfserve_roles() as roles:
-            roles = roles or []
             with contextlib.suppress(ValueError):
                 roles.remove(role.id)
-        await ctx.send(f"🗑️ Rol verwijderd uit self-serve allowlist: **{role.name}**.")
+        await ctx.send(f"Rol verwijderd uit self-serve allowlist: {role.name}.")
 
     @_selfserve.command(name="status")
     async def _ss_status(self, ctx: commands.Context):
         cfg = await self.config.guild(ctx.guild).all()
         roles = cfg.get("selfserve_roles", []) or []
-        names = []
+        names: List[str] = []
         for rid in roles:
             r = ctx.guild.get_role(int(rid))
             if r:
                 names.append(r.name)
         await ctx.send(
-            "Self-serve: **{onoff}** | URL: **{url}** | Rollen: {roles}".format(
+            "Self-serve: {onoff} | URL: {url} | Rollen: {roles}".format(
                 onoff="aan" if cfg.get("selfserve_enabled", False) else "uit",
                 url="toegestaan" if cfg.get("selfserve_allow_url", True) else "geblokkeerd",
-                roles=", ".join(names) if names else "(iedereen)"
+                roles=", ".join(names) if names else "(iedereen)",
             )
         )
 
     # ---------- top-level guild-default upload ----------
+
     @joinsound.command(name="upload")
     async def _upload(self, ctx: commands.Context, *, name: Optional[str] = None):
-        """
-        Upload een MP3/WAV/OGG/M4A/WEBM als *guild-default* joinsound.
-        Gebruik: stuur een bijlage mee met dit commando.
-        """
+        """Upload een MP3/WAV/OGG/M4A/WEBM als guild-default joinsound (met bijlage)."""
         cfg = await self.config.guild(ctx.guild).all()
         if not ctx.message.attachments:
-            return await ctx.send("⚠️ Voeg een **MP3/WAV/OGG/M4A/WEBM** toe als bijlage bij je bericht.")
+            return await ctx.send("Voeg een MP3/WAV/OGG/M4A/WEBM bijlage toe.")
 
         att = ctx.message.attachments[0]
         lower = att.filename.lower()
         if not lower.endswith(VALID_EXTS):
-            return await ctx.send("❌ Ondersteunde extensies: **.mp3 .wav .ogg .m4a .webm**")
+            return await ctx.send("Ondersteunde extensies: .mp3 .wav .ogg .m4a .webm")
 
-        # size-limit
         limit_bytes = int(float(cfg["max_filesize_mb"]) * 1024 * 1024)
         if att.size and att.size > limit_bytes:
-            return await ctx.send(f"❌ Bestand groter dan **{cfg['max_filesize_mb']:.1f} MB**.")
+            return await ctx.send(f"Bestand groter dan {cfg['max_filesize_mb']:.1f} MB.")
 
         desired = (name or att.filename).strip()
         safe = re.sub(r"[^A-Za-z0-9._-]", "_", desired)
@@ -348,25 +295,24 @@ class JoinSound(commands.Cog):
         try:
             await att.save(target)
         except Exception as e:
-            return await ctx.send(f"❌ Opslaan mislukt: `{type(e).__name__}: {e}`")
+            return await ctx.send(f"Opslaan mislukt: {type(e).__name__}: {e}")
 
-        # duurcheck
         max_s = int(cfg.get("max_duration_s", 0))
         if max_s and bool(cfg.get("enforce_duration", True)):
             dur = await self._probe_duration(target)
             if dur is None:
-                await ctx.send("ℹ️ `ffprobe` niet gevonden of geen duur uitleesbaar; sla length-check over.")
+                await ctx.send("ffprobe niet gevonden of geen duur uitleesbaar; length-check overgeslagen.")
             elif dur > max_s + 0.15:
                 with contextlib.suppress(Exception):
                     target.unlink(missing_ok=True)
-                return await ctx.send(f"❌ Clip te lang: **{dur:.2f}s** > **{max_s}s**.")
+                return await ctx.send(f"Clip te lang: {dur:.2f}s > {max_s}s.")
 
         await self.config.guild(ctx.guild).file_name.set(target.name)
         await self.config.guild(ctx.guild).source.set("file")
-        await ctx.send(f"✅ Guild-default opgeslagen als `{target.name}` en bron op **file** gezet.\n"
-                       f"Test met: `[p]joinsound test`")
+        await ctx.send(f"Guild-default opgeslagen als `{target.name}` en bron op file gezet. Test met: `[p]joinsound test`")
 
-    # ---------- per-user subcommands (admin) ----------
+    # ---------- per-user (admin) ----------
+
     @joinsound.group(name="user")
     @commands.admin_or_permissions(manage_guild=True)
     async def _usergroup(self, ctx: commands.Context):
@@ -375,64 +321,59 @@ class JoinSound(commands.Cog):
 
     @_usergroup.command(name="url")
     async def _user_url(self, ctx: commands.Context, member: discord.Member, url: str):
-        """Stel een URL in als joinsound voor een gebruiker."""
         async with self.config.guild(ctx.guild).user_sounds() as m:
             prev = m.get(str(member.id))
             if prev and prev.get("kind") == "file":
                 self._try_delete_rel(prev.get("path"))
             m[str(member.id)] = {"kind": "url", "url": url.strip(), "disabled": False}
-        await ctx.send(f"🔗 Per-user URL ingesteld voor {member.mention}.")
+        await ctx.send(f"Per-user URL ingesteld voor {member.mention}.")
 
     @_usergroup.command(name="upload")
     async def _user_upload(self, ctx: commands.Context, member: discord.Member, *, name: Optional[str] = None):
-        """Upload een sound voor een user (admin, met bijlage)."""
         await self._handle_member_upload(ctx, member, name)
 
     @_usergroup.command(name="disable")
     async def _user_disable(self, ctx: commands.Context, member: discord.Member, state: str):
-        """Schakel per-user sound in/uit voor een gebruiker."""
-        v = state.strip().lower()
-        val = v in {"1","true","yes","on","aan","enable"}
+        val = state.strip().lower() in {"1", "true", "yes", "on", "aan", "enable"}
         async with self.config.guild(ctx.guild).user_sounds() as m:
             us = m.get(str(member.id))
             if not us:
-                return await ctx.send("ℹ️ Deze user heeft nog geen per-user sound.")
+                return await ctx.send("Deze user heeft nog geen per-user sound.")
             us["disabled"] = not val
-        await ctx.send(f"👤 Per-user sound voor {member.mention} **{'ingeschakeld' if val else 'uitgeschakeld'}**.")
+        await ctx.send(f"Per-user sound voor {member.mention} {'ingeschakeld' if val else 'uitgeschakeld'}.")
 
     @_usergroup.command(name="remove")
     async def _user_remove(self, ctx: commands.Context, member: discord.Member):
-        """Verwijder per-user sound (en ruim lokale file op)."""
         async with self.config.guild(ctx.guild).user_sounds() as m:
             us = m.pop(str(member.id), None)
         if us and us.get("kind") == "file":
             self._try_delete_rel(us.get("path"))
-        await ctx.send(f"🗑️ Per-user sound voor {member.mention} verwijderd.")
+        await ctx.send(f"Per-user sound voor {member.mention} verwijderd.")
 
     @_usergroup.command(name="show")
     async def _user_show(self, ctx: commands.Context, member: discord.Member):
         cfg = await self.config.guild(ctx.guild).all()
         us = (cfg.get("user_sounds") or {}).get(str(member.id))
         if not us:
-            return await ctx.send(f"ℹ️ {member.mention} heeft geen per-user sound.")
+            return await ctx.send(f"{member.mention} heeft geen per-user sound.")
         if us.get("kind") == "url":
-            await ctx.send(f"👤 {member.mention}: URL `{us.get('url','')}` | disabled={us.get('disabled', False)}")
+            await ctx.send(f"{member.mention}: URL `{us.get('url','')}` | disabled={us.get('disabled', False)}")
         else:
-            await ctx.send(f"👤 {member.mention}: FILE `{us.get('path','')}` | disabled={us.get('disabled', False)}")
+            await ctx.send(f"{member.mention}: FILE `{us.get('path','')}` | disabled={us.get('disabled', False)}")
 
     @_usergroup.command(name="list")
     async def _user_list(self, ctx: commands.Context):
         cfg = await self.config.guild(ctx.guild).all()
         m = cfg.get("user_sounds") or {}
         if not m:
-            return await ctx.send("ℹ️ Geen per-user sounds ingesteld.")
+            return await ctx.send("Geen per-user sounds ingesteld.")
         entries = []
         for uid, us in list(m.items())[:50]:
             kind = us.get("kind")
             disabled = us.get("disabled", False)
             desc = us.get("url", "") if kind == "url" else us.get("path", "")
             entries.append(f"<@{uid}> — {kind.upper()} — {'DISABLED' if disabled else 'ENABLED'} — {desc}")
-        await ctx.send("📜 Per-user sounds:\n" + "\n".join(entries))
+        await ctx.send("Per-user sounds:\n" + "\n".join(entries))
 
     @_usergroup.command(name="test")
     async def _user_test(self, ctx: commands.Context, member: discord.Member):
@@ -441,89 +382,95 @@ class JoinSound(commands.Cog):
         cfg = await self.config.guild(ctx.guild).all()
         override = self._resolve_user_override(ctx.guild, cfg, member)
         if not override:
-            return await ctx.send("ℹ️ Geen (ingeschakelde) per-user sound voor deze user.")
+            return await ctx.send("Geen (ingeschakelde) per-user sound voor deze user.")
         await ctx.message.add_reaction("🎧")
         await self._play_in_channel(ctx.guild, ctx.author.voice.channel, invoked=True, override=override)
         await ctx.message.add_reaction("✅")
 
-    # ---------- SELF-SERVE member commands ----------
+    # ---------- self-serve member commands ----------
+
     @commands.group(name="mysound")
     @commands.guild_only()
     async def mysound(self, ctx: commands.Context):
-        """Beheer je **eigen** joinsound (als self-serve aanstaat)."""
+        """Beheer je eigen joinsound (als self-serve aanstaat)."""
         pass
 
     @mysound.command(name="upload")
     @commands.guild_only()
-    @selfserve_check
     async def _me_upload(self, ctx: commands.Context, *, name: Optional[str] = None):
+        if not await self._check_selfserve(ctx):
+            return
         await self._handle_member_upload(ctx, ctx.author, name)
 
     @mysound.command(name="url")
     @commands.guild_only()
-    @selfserve_check
     async def _me_url(self, ctx: commands.Context, url: str):
+        if not await self._check_selfserve(ctx):
+            return
         cfg = await self.config.guild(ctx.guild).all()
         if not cfg.get("selfserve_allow_url", True):
-            return await ctx.send("🚫 URL instellen is uitgeschakeld door een admin. Upload een bestand.")
+            return await ctx.send("URL instellen is uitgeschakeld door een admin. Upload een bestand.")
         async with self.config.guild(ctx.guild).user_sounds() as m:
             prev = m.get(str(ctx.author.id))
             if prev and prev.get("kind") == "file":
                 self._try_delete_rel(prev.get("path"))
             m[str(ctx.author.id)] = {"kind": "url", "url": url.strip(), "disabled": False}
-        await ctx.send("✅ Je persoonlijke URL is ingesteld.")
+        await ctx.send("Je persoonlijke URL is ingesteld.")
 
     @mysound.command(name="remove")
     @commands.guild_only()
-    @selfserve_check
     async def _me_remove(self, ctx: commands.Context):
+        if not await self._check_selfserve(ctx):
+            return
         async with self.config.guild(ctx.guild).user_sounds() as m:
             us = m.pop(str(ctx.author.id), None)
         if us and us.get("kind") == "file":
             self._try_delete_rel(us.get("path"))
-        await ctx.send("🗑️ Je persoonlijke sound is verwijderd.")
+        await ctx.send("Je persoonlijke sound is verwijderd.")
 
     @mysound.command(name="show")
     @commands.guild_only()
-    @selfserve_check
     async def _me_show(self, ctx: commands.Context):
+        if not await self._check_selfserve(ctx):
+            return
         cfg = await self.config.guild(ctx.guild).all()
         us = (cfg.get("user_sounds") or {}).get(str(ctx.author.id))
         if not us:
-            return await ctx.send("ℹ️ Je hebt nog geen persoonlijke sound.")
+            return await ctx.send("Je hebt nog geen persoonlijke sound.")
         if us.get("kind") == "url":
-            await ctx.send(f"👤 Jouw sound: URL `{us.get('url','')}`")
+            await ctx.send(f"Jouw sound: URL `{us.get('url','')}`")
         else:
-            await ctx.send(f"👤 Jouw sound: FILE `{us.get('path','')}`")
+            await ctx.send(f"Jouw sound: FILE `{us.get('path','')}`")
 
     @mysound.command(name="test")
     @commands.guild_only()
-    @selfserve_check
     async def _me_test(self, ctx: commands.Context):
+        if not await self._check_selfserve(ctx):
+            return
         if not ctx.author.voice or not ctx.author.voice.channel:
             return await ctx.send("Je zit niet in een voicekanaal.")
         cfg = await self.config.guild(ctx.guild).all()
         override = self._resolve_user_override(ctx.guild, cfg, ctx.author)
         if not override:
-            return await ctx.send("ℹ️ Je hebt geen (ingeschakelde) persoonlijke sound.")
+            return await ctx.send("Je hebt geen (ingeschakelde) persoonlijke sound.")
         await ctx.message.add_reaction("🎧")
         await self._play_in_channel(ctx.guild, ctx.author.voice.channel, invoked=True, override=override)
         await ctx.message.add_reaction("✅")
 
     # -------------------- shared upload handler --------------------
+
     async def _handle_member_upload(self, ctx: commands.Context, member: discord.Member, name: Optional[str]):
         cfg = await self.config.guild(ctx.guild).all()
         if not ctx.message.attachments:
-            return await ctx.send("⚠️ Voeg een **MP3/WAV/OGG/M4A/WEBM** bijlage toe.")
-
+            return await ctx.send("Voeg een MP3/WAV/OGG/M4A/WEBM bijlage toe.")
         att = ctx.message.attachments[0]
         lower = att.filename.lower()
         if not lower.endswith(VALID_EXTS):
-            return await ctx.send("❌ Ondersteunde extensies: **.mp3 .wav .ogg .m4a .webm**")
+            return await ctx.send("Ondersteunde extensies: .mp3 .wav .ogg .m4a .webm")
 
         limit_bytes = int(float(cfg["max_filesize_mb"]) * 1024 * 1024)
         if att.size and att.size > limit_bytes:
-            return await ctx.send(f"❌ Bestand groter dan **{cfg['max_filesize_mb']:.1f} MB**.")
+            return await ctx.send(f"Bestand groter dan {cfg['max_filesize_mb']:.1f} MB.")
 
         desired = (name or att.filename).strip()
         safe = re.sub(r"[^A-Za-z0-9._-]", "_", desired)
@@ -539,17 +486,17 @@ class JoinSound(commands.Cog):
         try:
             await att.save(target)
         except Exception as e:
-            return await ctx.send(f"❌ Opslaan mislukt: `{type(e).__name__}: {e}`")
+            return await ctx.send(f"Opslaan mislukt: {type(e).__name__}: {e}")
 
         max_s: int = int(cfg.get("max_duration_s", 0))
         if max_s and bool(cfg.get("enforce_duration", True)):
             dur = await self._probe_duration(target)
             if dur is None:
-                await ctx.send("ℹ️ `ffprobe` niet gevonden of geen duur uitleesbaar; sla length-check over.")
+                await ctx.send("ffprobe niet gevonden of geen duur uitleesbaar; length-check overgeslagen.")
             elif dur > max_s + 0.15:
                 with contextlib.suppress(Exception):
                     target.unlink(missing_ok=True)
-                return await ctx.send(f"❌ Clip te lang: **{dur:.2f}s** > **{max_s}s**. Trim korter en upload opnieuw.")
+                return await ctx.send(f"Clip te lang: {dur:.2f}s > {max_s}s. Trim korter en upload opnieuw.")
 
         rel_path = f"users/{target_name}"
         async with self.config.guild(ctx.guild).user_sounds() as m:
@@ -557,17 +504,17 @@ class JoinSound(commands.Cog):
             if prev and prev.get("kind") == "file":
                 self._try_delete_rel(prev.get("path"))
             m[str(member.id)] = {"kind": "file", "path": rel_path, "disabled": False}
-        await ctx.send(f"✅ File ingesteld voor {'jou' if member == ctx.author else member.mention}: `{target.name}`")
+        await ctx.send(f"File ingesteld voor {'jou' if member == ctx.author else member.mention}: `{target.name}`")
 
     # -------------------- info & test --------------------
+
     @joinsound.command(name="file")
     async def _fileinfo(self, ctx: commands.Context):
         cfg = await self.config.guild(ctx.guild).all()
         await ctx.send(
-            "🔎 Source: **{src}** | 🔊 Volume: **{vol:.2f}** | 🧢 MaxVol: **{mv:.1f}x**\n"
-            "⚡ Overdrive: **{od}** | 🛡️ Limiter: **{lm}**\n"
-            "📁 File: `{fn}` | 🔗 URL: `{url}`\n"
-            "📦 Max size: **{ms:.1f} MB** | ⏱️ Max duur: **{md}s** | 👤 Prefer user: **{pref}** | 🧑‍🤝‍🧑 Self-serve: **{ss}**".format(
+            "Source: {src} | Volume: {vol:.2f} | MaxVol: {mv:.1f}x | Overdrive: {od} | Limiter: {lm}\n"
+            "File: {fn} | URL: {url}\n"
+            "Max size: {ms:.1f} MB | Max duur: {md}s | Prefer user: {pref} | Self-serve: {ss}".format(
                 src=cfg["source"],
                 vol=cfg["volume"],
                 mv=cfg["max_volume"],
@@ -614,7 +561,6 @@ class JoinSound(commands.Cog):
             if len(humans) < conf["min_humans"]:
                 return
 
-        # kies sound (per-user override eerst, dan guild default)
         override = None
         if conf.get("prefer_user_overrides", True):
             override = self._resolve_user_override(guild, conf, member)
@@ -657,7 +603,7 @@ class JoinSound(commands.Cog):
             if played and not self._is_busy(vc):
                 await self._schedule_auto_disconnect(state, vc, conf["auto_disconnect_s"])
 
-    # -------------------- core voice helpers --------------------
+    # -------------------- voice helpers --------------------
 
     def _is_busy(self, vc: discord.VoiceClient) -> bool:
         with contextlib.suppress(Exception):
@@ -704,7 +650,7 @@ class JoinSound(commands.Cog):
 
         state.disconnect_task = asyncio.create_task(_runner())
 
-    # -------------------- sound resolution --------------------
+    # -------------------- resolution --------------------
 
     def _resolve_user_override(self, guild: discord.Guild, cfg: dict, member: discord.Member) -> Optional[Tuple[str, str]]:
         us = (cfg.get("user_sounds") or {}).get(str(member.id))
@@ -786,6 +732,7 @@ class JoinSound(commands.Cog):
             return False
 
         done = asyncio.Event()
+
         def _after_play(err: Optional[Exception]):
             done.set()
 
@@ -813,6 +760,7 @@ class JoinSound(commands.Cog):
         conf = await self.config.guild(guild).all()
         if not conf["enabled"] and not invoked:
             return
+
         ov = override or self._resolve_guild_default(conf)
         if not ov:
             return
@@ -870,4 +818,3 @@ class JoinSound(commands.Cog):
             return float(s)
         except Exception:
             return None
-```
