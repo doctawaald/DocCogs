@@ -26,17 +26,15 @@ class JoinSound(commands.Cog):
     default_guild = {
         "enabled": True,
         "url": "",
-        "volume": 0.6,           # 0.0 - 1.0 (fader)
-        "boost": 1.0,            # multiplier (1.0 = geen boost)
-        "boost_db": 0.0,         # dB boost, heeft voorrang op 'boost' als != 0.0
-        "auto_disconnect_s": 8,  # na X s disconnecten als we alleen voor de joinsound connecten
+        "volume": 0.6,            # 0.0 - 2.0 (fader; 2.0 = x2)
+        "auto_disconnect_s": 8,   # na X s disconnecten als we alleen voor de joinsound connecten
         "ignore_bots": True,
-        "min_humans": 1,         # speel alleen als er minstens 1 human joined (excl. bots)
-        "source": "url",         # 'url' of 'file'
-        "file_name": "",         # relatieve bestandsnaam in cog data dir
-        "max_filesize_mb": 1,    # upload hard limit (MB)
-        "max_duration_s": 6,     # maximale duur (sec) voor uploads (0=uit)
-        "enforce_duration": True # vereis ffprobe check op duur
+        "min_humans": 1,          # speel alleen als er minstens 1 human joined (excl. bots)
+        "source": "url",          # 'url' of 'file'
+        "file_name": "",          # relatieve bestandsnaam in cog data dir
+        "max_filesize_mb": 1,     # upload hard limit (MB)
+        "max_duration_s": 6,      # maximale duur (sec) voor uploads (0=uit)
+        "enforce_duration": True  # vereis ffprobe check op duur
     }
 
     def __init__(self, bot: Red):
@@ -86,28 +84,10 @@ class JoinSound(commands.Cog):
             try:
                 vol = float(value)
             except ValueError:
-                return await ctx.send("Geef een getal tussen 0.0 en 1.0.")
-            vol = max(0.0, min(1.0, vol))
+                return await ctx.send("Geef een getal tussen **0.0** en **2.0**.")
+            vol = max(0.0, min(2.0, vol))  # laat x2 toe
             await self.config.guild(ctx.guild).volume.set(vol)
-            await ctx.send(f"🔊 Volume (fader) op **{vol:.2f}** gezet.")
-
-        elif key in ("boost", "gain"):
-            try:
-                boost = float(value)
-            except ValueError:
-                return await ctx.send("Geef een getal (multiplier) tussen **1.0** en **3.0** (bijv. 1.6 ≈ +4 dB).")
-            boost = max(0.5, min(3.0, boost))
-            await self.config.guild(ctx.guild).boost.set(boost)
-            await ctx.send(f"💥 Boost (multiplier) op **{boost:.2f}x** gezet.")
-
-        elif key in ("boostdb", "gaindb"):
-            try:
-                db = float(value)
-            except ValueError:
-                return await ctx.send("Geef dB tussen **-12** en **+12** (bijv. 5).")
-            db = max(-12.0, min(12.0, db))
-            await self.config.guild(ctx.guild).boost_db.set(db)
-            await ctx.send(f"💥 Boost (dB) op **{db:.1f} dB** gezet.")
+            await ctx.send(f"🔊 Volume (fader) op **{vol:.2f}** gezet. (Max 2.0 = x2)")
 
         elif key in ("timeout", "autodisconnect", "auto_disconnect_s"):
             try:
@@ -150,15 +130,14 @@ class JoinSound(commands.Cog):
             await self.config.guild(ctx.guild).enforce_duration.set(val)
             await ctx.send(f"⏱️ Duurcontrole **{'aan' if val else 'uit'}**.")
 
-        elif key in ("resetboost", "noboost"):
-            await self.config.guild(ctx.guild).boost.set(1.0)
-            await self.config.guild(ctx.guild).boost_db.set(0.0)
-            await ctx.send("🔁 Boost gereset (mult=1.0, dB=0.0).")
+        # Backwards compat: oude 'boost' keys afvangen en uitleg geven
+        elif key in ("boost", "gain", "boostdb", "gaindb"):
+            await ctx.send("ℹ️ `boost` is uitgefaseerd. Gebruik enkel `volume` (0.0–2.0).")
 
         else:
             await ctx.send(
-                "Onbekend. Keys: `url`, `volume`, `boost`, `boostdb`, `timeout`, `source (url|file)`, "
-                "`maxsize`, `maxdur`, `enforcedur`, `resetboost`."
+                "Onbekend. Keys: `url`, `volume (0.0–2.0)`, `timeout`, `source (url|file)`, "
+                "`maxsize`, `maxdur`, `enforcedur`."
             )
 
     @joinsound.command(name="upload")
@@ -206,8 +185,9 @@ class JoinSound(commands.Cog):
                 if dur > max_s + 0.15:  # kleine marge
                     with contextlib.suppress(Exception):
                         target.unlink(missing_ok=True)
-                    return await ctx.send(f"❌ Clip te lang: **{dur:.2f}s** > **{max_s}s**. "
-                                          "Trim ‘m korter en upload opnieuw.")
+                    return await ctx.send(
+                        f"❌ Clip te lang: **{dur:.2f}s** > **{max_s}s**. Trim korter en upload opnieuw."
+                    )
 
         await self.config.guild(ctx.guild).file_name.set(target.name)
         await self.config.guild(ctx.guild).source.set("file")
@@ -222,12 +202,10 @@ class JoinSound(commands.Cog):
         fname = cfg["file_name"] or "(niet ingesteld)"
         url = cfg["url"] or "(niet ingesteld)"
         vol = cfg["volume"]
-        boost = cfg["boost"]
-        boost_db = cfg["boost_db"]
         ms = cfg["max_filesize_mb"]
         md = cfg["max_duration_s"]
         await ctx.send(
-            f"🔎 Source: **{src}** | 🔊 Vol: **{vol:.2f}** | 💥 Boost: **{boost:.2f}x / {boost_db:+.1f} dB**\n"
+            f"🔎 Source: **{src}** | 🔊 Volume: **{vol:.2f}** (max 2.0)\n"
             f"📁 File: `{fname}`\n"
             f"🔗 URL: `{url}`\n"
             f"📦 Max size: **{ms:.1f} MB** | ⏱️ Max duur: **{md}s**"
@@ -354,29 +332,13 @@ class JoinSound(commands.Cog):
 
         state.disconnect_task = asyncio.create_task(_runner())
 
-    def _ffmpeg_options(self, is_url: bool, boost_mult: float, boost_db: float) -> dict:
-        """
-        Bouw FFmpeg options. dB-boost heeft voorrang op multiplier.
-        """
-        base_opts = "-vn"
-        if abs(boost_db) > 1e-3:
-            base_opts = f'{base_opts} -filter:a "volume={boost_db:.3f}dB"'
-        elif abs(boost_mult - 1.0) > 1e-3:
-            base_opts = f'{base_opts} -filter:a "volume={boost_mult:.3f}"'
-
-        if is_url:
-            return {"before_options": FFMPEG_BEFORE, "options": base_opts}
-        else:
-            return {"options": base_opts}
-
     async def _safe_play(self, vc: discord.VoiceClient, conf: dict) -> bool:
         if self._is_busy(vc):
             return False
 
         src = conf.get("source", "url")
-        boost = float(conf.get("boost", 1.0))
-        boost_db = float(conf.get("boost_db", 0.0))
         vol = float(conf.get("volume", 0.6))
+        vol = max(0.0, min(2.0, vol))  # x2 toegestaan
 
         try:
             if src == "file":
@@ -386,17 +348,16 @@ class JoinSound(commands.Cog):
                 path = cog_data_path(self) / fname
                 if not path.exists():
                     return False
-                ffopts = self._ffmpeg_options(is_url=False, boost_mult=boost, boost_db=boost_db)
-                pcm = discord.FFmpegPCMAudio(str(path), **ffopts)
+                # Lokaal bestand: reconnect flags niet nodig
+                pcm = discord.FFmpegPCMAudio(str(path), options="-vn")
             else:
                 url: str = conf.get("url") or ""
                 if not url:
                     return False
-                ffopts = self._ffmpeg_options(is_url=True, boost_mult=boost, boost_db=boost_db)
-                pcm = discord.FFmpegPCMAudio(url, **ffopts)
+                pcm = discord.FFmpegPCMAudio(url, before_options=FFMPEG_BEFORE, options="-vn")
 
             source = discord.PCMVolumeTransformer(pcm)
-            source.volume = max(0.0, min(1.0, vol))
+            source.volume = vol  # discord.py accepteert tot 2.0
         except Exception:
             return False
 
