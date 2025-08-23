@@ -1,297 +1,284 @@
-from redbot.core import commands, Config
-import discord
-import os
 import asyncio
-import traceback
-from discord.errors import ConnectionClosed
+import contextlib
+from dataclasses import dataclass
+from typing import Dict, Optional
 
+import discord
+from redbot.core import commands, Config
+from redbot.core.bot import Red
+
+FFMPEG_BEFORE = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+FFMPEG_OPTIONS = {"before_options": FFMPEG_BEFORE, "options": "-vn"}
+
+@dataclass
+class GuildState:
+    lock: asyncio.Lock
+    last_connected_channel_id: Optional[int] = None
 
 class JoinSound(commands.Cog):
-    """Play a per-user join sound (URL or uploaded .mp3) when a user joins a voice channel."""
+    """Speelt een join sound wanneer een user een voice channel joint."""
 
-    def __init__(self, bot):
+    default_guild = {
+        "enabled": True,
+        "url": "",
+        "volume": 0.6,           # 0.0 - 1.0
+        "auto_disconnect_s": 8,  # na zoveel seconden disconnecten als we alleen voor de join sound connecten
+        "ignore_bots": True,
+        "min_humans": 1          # speel alleen als er minstens 1 human joined (excl bots)
+    }
+
+    def __init__(self, bot: Red):
         self.bot = bot
-        self.config = Config.get_conf(self, identifier=43219876)
-        default_user = {"mp3_url": None}
-        default_guild = {
-            "allowed_roles": [],
-            "auto_disconnect": True,
-            "disconnect_delay": 30,
-        }
-        self.config.register_user(**default_user)
-        self.config.register_guild(**default_guild)
+        self.config = Config.get_conf(self, identifier=0xB005EE51)
+        self.config.register_guild(**self.default_guild)
+        self._guild_states: Dict[int, GuildState] = {}
 
-        self.voice_clients = {}       # guild_id -> VoiceClient
-        self.disconnect_tasks = {}    # guild_id -> asyncio.Task
-        self.vc_locks = {}            # guild_id -> asyncio.Lock
+    def _state(self, guild: discord.Guild) -> GuildState:
+        gs = self._guild_states.get(guild.id)
+        if not gs:
+            gs = GuildState(lock=asyncio.Lock())
+            self._guild_states[guild.id] = gs
+        return gs
 
-        print("✅ JoinSound loaded (robust VC lifecycle).")
+    # ===================== Commands =====================
 
-    # ---------------- Role Management ----------------
+    @commands.group(name="joinsound")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def joinsound(self, ctx: commands.Context):
+        """Beheer JoinSound instellingen."""
+        pass
 
-    @commands.command()
-    async def addjoinsoundrole(self, ctx, role: discord.Role):
-        """Add a role allowed to set join sounds (bot owner only)."""
-        if not await self.bot.is_owner(ctx.author):
-            return await ctx.send("❌ Only the bot owner can modify allowed roles.")
-        roles = await self.config.guild(ctx.guild).allowed_roles()
-        if role.id in roles:
-            return await ctx.send(f"❌ `{role.name}` is already allowed.")
-        roles.append(role.id)
-        await self.config.guild(ctx.guild).allowed_roles.set(roles)
-        await ctx.send(f"✅ `{role.name}` added to allowed roles.")
+    @joinsound.command(name="enable")
+    async def _enable(self, ctx: commands.Context):
+        await self.config.guild(ctx.guild).enabled.set(True)
+        await ctx.send("✅ JoinSound **ingeschakeld**.")
 
-    @commands.command()
-    async def removejoinsoundrole(self, ctx, role: discord.Role):
-        """Remove a role from allowed join-sound roles (bot owner only)."""
-        if not await self.bot.is_owner(ctx.author):
-            return await ctx.send("❌ Only the bot owner can modify allowed roles.")
-        roles = await self.config.guild(ctx.guild).allowed_roles()
-        if role.id not in roles:
-            return await ctx.send(f"❌ `{role.name}` is not in allowed roles.")
-        roles.remove(role.id)
-        await self.config.guild(ctx.guild).allowed_roles.set(roles)
-        await ctx.send(f"✅ `{role.name}` removed.")
+    @joinsound.command(name="disable")
+    async def _disable(self, ctx: commands.Context):
+        await self.config.guild(ctx.guild).enabled.set(False)
+        await ctx.send("⏸️ JoinSound **uitgeschakeld**.")
 
-    @commands.command()
-    async def listjoinsoundroles(self, ctx):
-        """List roles permitted to set join sounds (bot owner only)."""
-        if not await self.bot.is_owner(ctx.author):
-            return await ctx.send("❌ Only the bot owner can view allowed roles.")
-        roles = await self.config.guild(ctx.guild).allowed_roles()
-        if not roles:
-            return await ctx.send("ℹ️ No roles currently allowed.")
-        names = [
-            discord.utils.get(ctx.guild.roles, id=r).name
-            for r in roles
-            if discord.utils.get(ctx.guild.roles, id=r)
-        ]
-        await ctx.send("✅ Allowed roles: " + ", ".join(names))
-
-    # ---------------- Settings ----------------
-
-    @commands.command()
-    async def toggledisconnect(self, ctx):
-        """Toggle auto-disconnect on/off (bot owner only)."""
-        if not await self.bot.is_owner(ctx.author):
-            return await ctx.send("❌ Only the bot owner can toggle this.")
-        current = await self.config.guild(ctx.guild).auto_disconnect()
-        new = not current
-        await self.config.guild(ctx.guild).auto_disconnect.set(new)
-        await ctx.send(f"🔌 Auto-disconnect is now {'enabled' if new else 'disabled'}.")
-
-    @commands.command()
-    async def setdisconnectdelay(self, ctx, seconds: int):
-        """Set auto-disconnect delay in seconds (5–300, bot owner only)."""
-        if not await self.bot.is_owner(ctx.author):
-            return await ctx.send("❌ Only the bot owner can set this.")
-        if seconds < 5 or seconds > 300:
-            return await ctx.send("❌ Delay must be between 5 and 300 seconds.")
-        await self.config.guild(ctx.guild).disconnect_delay.set(seconds)
-        await ctx.send(f"⏱️ Disconnect delay set to {seconds}s.")
-
-    # ---------------- User Setup ----------------
-
-    @commands.command()
-    async def joinsound(self, ctx, url: str = None):
-        """
-        Set your own join sound:
-        - Provide a direct .mp3 URL, or
-        - Upload a .mp3 attachment (if no URL).
-        """
-        # Permission check
-        if not await self.bot.is_owner(ctx.author):
-            allowed = await self.config.guild(ctx.guild).allowed_roles()
-            if not any(r.id in allowed for r in ctx.author.roles):
-                return await ctx.send("❌ You don't have permission.")
-
-        folder = "data/joinsound/mp3s/"
-        os.makedirs(folder, exist_ok=True)
-        path = os.path.join(folder, f"{ctx.author.id}.mp3")
-
-        # Clear previous
-        if os.path.isfile(path):
-            os.remove(path)
-        await self.config.user(ctx.author).mp3_url.clear()
-
-        # URL
-        if url:
-            if not url.lower().endswith(".mp3"):
-                return await ctx.send("❌ URL must end with .mp3")
-            await self.config.user(ctx.author).mp3_url.set(url)
-            return await ctx.send(f"✅ Your join sound URL set: {url}")
-
-        # Attachment
-        if not ctx.message.attachments:
-            return await ctx.send("📎 Provide a .mp3 URL or upload a .mp3 file.")
-        att = ctx.message.attachments[0]
-        if not att.filename.lower().endswith(".mp3"):
-            return await ctx.send("❌ Only .mp3 allowed.")
-        try:
-            await att.save(path)
-            await ctx.send("✅ Your local join sound saved.")
-        except Exception as e:
-            return await ctx.send(f"❌ Failed to save file: {e}")
-
-    @commands.command()
-    async def setjoinsoundfor(self, ctx, member: discord.Member, url: str = None):
-        """
-        Set join sound for another user (owner or allowed roles).
-        """
-        if not await self.bot.is_owner(ctx.author):
-            allowed = await self.config.guild(ctx.guild).allowed_roles()
-            if not any(r.id in allowed for r in ctx.author.roles):
-                return await ctx.send("❌ You don't have permission.")
-
-        folder = "data/joinsound/mp3s/"
-        os.makedirs(folder, exist_ok=True)
-        path = os.path.join(folder, f"{member.id}.mp3")
-
-        if os.path.isfile(path):
-            os.remove(path)
-        await self.config.user(member).mp3_url.clear()
-
-        if url:
-            if not url.lower().endswith(".mp3"):
-                return await ctx.send("❌ URL must end with .mp3")
-            await self.config.user(member).mp3_url.set(url)
-            return await ctx.send(f"✅ Join sound set for {member.display_name}: {url}")
-
-        if not ctx.message.attachments:
-            return await ctx.send("📎 Provide a .mp3 URL or upload a .mp3 file.")
-        att = ctx.message.attachments[0]
-        if not att.filename.lower().endswith(".mp3"):
-            return await ctx.send("❌ Only .mp3 allowed.")
-        try:
-            await att.save(path)
-            return await ctx.send(f"✅ Local join sound saved for {member.display_name}.")
-        except Exception as e:
-            return await ctx.send(f"❌ Failed to save file: {e}")
-
-    @commands.command()
-    async def cogtest(self, ctx):
-        """Basic health check."""
-        await ctx.send("✅ JoinSound cog active.")
-
-    # ---------------- Internal helpers ----------------
-
-    def _get_lock(self, gid):
-        lock = self.vc_locks.get(gid)
-        if lock is None:
-            lock = asyncio.Lock()
-            self.vc_locks[gid] = lock
-        return lock
-
-    async def _idle_disconnect(self, guild_id, delay):
-        await asyncio.sleep(delay)
-        vc = self.voice_clients.get(guild_id)
-        if vc and vc.is_connected():
+    @joinsound.command(name="set")
+    async def _set(
+        self,
+        ctx: commands.Context,
+        key: str,
+        *,
+        value: str
+    ):
+        key = key.lower()
+        if key == "url":
+            await self.config.guild(ctx.guild).url.set(value.strip())
+            await ctx.send(f"🔗 URL ingesteld op:\n`{value.strip()}`")
+        elif key in ("volume", "vol"):
             try:
-                if hasattr(vc, "_should_reconnect"):
-                    vc._should_reconnect = False
-                await vc.disconnect()
-            except Exception:
-                pass
-        self.voice_clients.pop(guild_id, None)
-        self.disconnect_tasks.pop(guild_id, None)
+                vol = float(value)
+            except ValueError:
+                return await ctx.send("Geef een getal tussen 0.0 en 1.0.")
+            vol = max(0.0, min(1.0, vol))
+            await self.config.guild(ctx.guild).volume.set(vol)
+            await ctx.send(f"🔊 Volume op **{vol:.2f}** gezet.")
+        elif key in ("timeout", "autodisconnect", "auto_disconnect_s"):
+            try:
+                secs = int(value)
+            except ValueError:
+                return await ctx.send("Geef een geheel aantal seconden.")
+            secs = max(2, min(120, secs))
+            await self.config.guild(ctx.guild).auto_disconnect_s.set(secs)
+            await ctx.send(f"⏱️ Auto‑disconnect op **{secs}s** gezet.")
+        else:
+            await ctx.send("Onbekende sleutel. Gebruik `url`, `volume`, of `timeout`.")
 
-    # ---------------- Voice Handler ----------------
+    @joinsound.command(name="test")
+    async def _test(self, ctx: commands.Context):
+        """Speel de joinsound nu in jouw voice channel (zonder te wachten op een join-event)."""
+        url = await self.config.guild(ctx.guild).url()
+        if not url:
+            return await ctx.send("Stel eerst een URL in met `[p]joinsound set url <url>`.")
+        if not ctx.author.voice or not ctx.author.voice.channel:
+            return await ctx.send("Je zit niet in een voicekanaal.")
+        await ctx.message.add_reaction("🎧")
+        await self._play_in_channel(ctx.guild, ctx.author.voice.channel, invoked=True)
+        await ctx.message.add_reaction("✅")
+
+    # ===================== Event handler =====================
 
     @commands.Cog.listener()
-    async def on_voice_state_update(self, member, before, after):
-        if before.channel == after.channel or member.bot:
+    async def on_voice_state_update(
+        self,
+        member: discord.Member,
+        before: discord.VoiceState,
+        after: discord.VoiceState,
+    ):
+        # Ignore DMs or guild-less
+        if member is None or member.guild is None:
+            return
+        guild: discord.Guild = member.guild
+
+        # Settings
+        conf = await self.config.guild(guild).all()
+        if not conf["enabled"]:
             return
 
-        # Bot itself got disconnected externally
-        if member.id == self.bot.user.id and before.channel and after.channel is None:
-            gid = before.channel.guild.id
-            vc = self.voice_clients.pop(gid, None) or before.channel.guild.voice_client
-            if vc:
-                try:
-                    if hasattr(vc, "_should_reconnect"):
-                        vc._should_reconnect = False
-                    await vc.disconnect()
-                except Exception:
-                    pass
-            task = self.disconnect_tasks.pop(gid, None)
-            if task:
-                task.cancel()
-            print(f"🔔 Bot disconnected in guild {gid}; will reconnect on next user join only.")
+        # Ignore bot joins if configured
+        if conf["ignore_bots"] and member.bot:
             return
 
-        # Only react when a human joins
-        if before.channel is None and after.channel:
-            folder = "data/joinsound/mp3s/"
-            path = os.path.join(folder, f"{member.id}.mp3")
-            url = await self.config.user(member).mp3_url()
-            source = url if (url and not os.path.isfile(path)) else (path if os.path.isfile(path) else None)
-            if not source:
+        # We only care about real joins (into a channel)
+        joined_channel = after.channel
+        left_channel = before.channel
+        if joined_channel is None or joined_channel == left_channel:
+            # No join, move to None, or move within the same channel
+            return
+
+        # Optional: only trigger when at least `min_humans` non-bots are present (incl. the joiner)
+        if conf["min_humans"] > 0:
+            humans = [m for m in joined_channel.members if not m.bot]
+            if len(humans) < conf["min_humans"]:
                 return
 
-            gid = after.channel.guild.id
-            lock = self._get_lock(gid)
+        # Serialize per guild to avoid race conditions (double connect / double play)
+        state = self._state(guild)
+        async with state.lock:
+            # Re-check after lock (user might have already left)
+            if after.channel is None or after.channel != joined_channel:
+                return
 
-            async with lock:
-                # Cleanup stale VC
-                existing_vc = after.channel.guild.voice_client
-                cache_vc = self.voice_clients.get(gid)
-                vc = existing_vc or cache_vc
-                if vc and not vc.is_connected():
-                    try:
-                        if hasattr(vc, "_should_reconnect"):
-                            vc._should_reconnect = False
-                        await vc.disconnect()
-                    except Exception:
-                        pass
-                    self.voice_clients.pop(gid, None)
-
-                # Try connect
-                try:
-                    if vc and vc.is_connected():
-                        if vc.channel.id != after.channel.id:
-                            print(f"🔀 Moving VC to {after.channel}")
-                            await vc.move_to(after.channel)
-                    else:
-                        print("🎧 Creating fresh voice connection (reconnect=False)")
-                        try:
-                            vc = await after.channel.connect(reconnect=False, self_deaf=True)
-                        except ConnectionClosed as e:
-                            if getattr(e, "code", None) == 4006:
-                                print("⚠️ 4006 on first attempt, retrying after 1.5s...")
-                                await asyncio.sleep(1.5)
-                                vc = await after.channel.connect(reconnect=False, self_deaf=True)
-                            else:
-                                raise
-                        except asyncio.TimeoutError:
-                            print("⚠️ Timeout on first attempt, retrying after 1.5s...")
-                            await asyncio.sleep(1.5)
-                            vc = await after.channel.connect(reconnect=False, self_deaf=True)
-
-                        try:
-                            await vc.guild.me.edit(deafen=True)
-                        except Exception:
-                            pass
-                        self.voice_clients[gid] = vc
-
-                except Exception as e:
-                    print(f"⚠️ Connect error: {e}")
-                    traceback.print_exc()
+            # If the bot is already connected and playing music elsewhere, skip!
+            vc: Optional[discord.VoiceClient] = guild.voice_client
+            if vc and vc.is_connected():
+                if vc.channel.id == joined_channel.id:
+                    # Same channel: okay to play if not currently playing music
+                    if self._is_busy(vc):
+                        return
+                    await self._safe_play(vc, conf)
                     return
+                else:
+                    # Different channel
+                    if self._is_busy(vc):
+                        # Busy (likely music) → do not yank it around.
+                        return
+                    # Idle elsewhere → disconnect first
+                    await self._safe_disconnect(vc)
 
-                # Play the sound
-                try:
-                    vc.play(discord.FFmpegPCMAudio(source))
-                    while vc.is_playing():
-                        await asyncio.sleep(0.1)
-                except Exception as e:
-                    print(f"⚠️ Playback error: {e}")
-                    traceback.print_exc()
+            # Connect (with backoff) only if user still in the channel
+            vc = await self._connect_with_backoff(guild, joined_channel)
+            if not vc:
+                return  # couldn’t connect; bail quietly
+
+            state.last_connected_channel_id = joined_channel.id
+
+            played = await self._safe_play(vc, conf)
+            # If we connected solely for the join sound, and we're not playing anything else, disconnect nicely
+            if played and not self._is_busy(vc):
+                await self._auto_disconnect_after(vc, conf["auto_disconnect_s"])
+
+    # ===================== Voice helpers =====================
+
+    def _is_busy(self, vc: discord.VoiceClient) -> bool:
+        """True als er iets speelt of gepauzeerd is."""
+        with contextlib.suppress(Exception):
+            if vc.is_playing() or vc.is_paused():
+                return True
+        return False
+
+    async def _connect_with_backoff(
+        self, guild: discord.Guild, channel: discord.VoiceChannel
+    ) -> Optional[discord.VoiceClient]:
+        """Probeer 2x te connecten met kleine backoff. Abort als user al weg is."""
+        delays = (0.0, 1.5)
+        for idx, delay in enumerate(delays):
+            if delay:
+                await asyncio.sleep(delay)
+            # Abort if no longer valid (channel empty of humans? we still allow if only bots? keep simple: continue)
+            try:
+                # channel might be stale; fetch fresh from cache is fine
+                if channel is None:
+                    return None
+                vc = await channel.connect(reconnect=False, self_deaf=True)
+                return vc
+            except asyncio.CancelledError:
+                return None
+            except Exception:
+                # swallow and try again
+                if idx == len(delays) - 1:
+                    return None
+        return None
+
+    async def _safe_play(self, vc: discord.VoiceClient, conf: dict) -> bool:
+        """Speel de ingestelde URL; return True als er effectief gespeeld werd."""
+        url: str = conf["url"]
+        if not url:
+            return False
+        # Als er al iets speelt, doe niets
+        if self._is_busy(vc):
+            return False
+        try:
+            source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(url, **FFMPEG_OPTIONS))
+            source.volume = float(conf["volume"])
+        except Exception:
+            # ffmpeg input fail
+            return False
+
+        done = asyncio.Event()
+
+        def _after_play(err: Optional[Exception]):
+            # We kunnen hier niet awaiten; zet alleen de flag.
+            done.set()
+
+        try:
+            vc.play(source, after=_after_play)
+        except Exception:
+            return False
+
+        # Wacht (met timeout) tot het klaar is of een error komt
+        try:
+            await asyncio.wait_for(done.wait(), timeout=15)
+        except asyncio.TimeoutError:
+            # Forceer stop als ffmpeg hangt
+            with contextlib.suppress(Exception):
+                vc.stop()
+            return True
+        return True
+
+    async def _auto_disconnect_after(self, vc: discord.VoiceClient, seconds: int):
+        seconds = max(2, min(120, int(seconds)))
+        await asyncio.sleep(seconds)
+        # Alleen disconnecten als we nog steeds idle zijn
+        if not vc.is_connected():
+            return
+        if self._is_busy(vc):
+            return
+        await self._safe_disconnect(vc)
+
+    async def _safe_disconnect(self, vc: discord.VoiceClient):
+        with contextlib.suppress(Exception):
+            if vc.is_playing():
+                vc.stop()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(vc.disconnect(force=True), timeout=5)
+
+    async def _play_in_channel(
+        self, guild: discord.Guild, channel: discord.VoiceChannel, invoked: bool = False
+    ):
+        """Helper voor testcommand: forceer play in channel met dezelfde guards."""
+        conf = await self.config.guild(guild).all()
+        if not conf["enabled"] and not invoked:
+            return
+
+        state = self._state(guild)
+        async with state.lock:
+            vc = guild.voice_client
+            if vc and vc.is_connected():
+                if vc.channel.id != channel.id:
+                    if self._is_busy(vc):
+                        # Als bezig: niet forceren in test; geef liever netjes op
+                        return
+                    await self._safe_disconnect(vc)
+            if not (vc and vc.is_connected()):
+                vc = await self._connect_with_backoff(guild, channel)
+                if not vc:
                     return
-
-                # Schedule auto-disconnect
-                if await self.config.guild(after.channel.guild).auto_disconnect():
-                    delay = await self.config.guild(after.channel.guild).disconnect_delay()
-                    task = self.disconnect_tasks.get(gid)
-                    if task:
-                        task.cancel()
-                    self.disconnect_tasks[gid] = asyncio.create_task(self._idle_disconnect(gid, delay))
+            played = await self._safe_play(vc, conf)
+            if played and not self._is_busy(vc):
+                await self._auto_disconnect_after(vc, conf["auto_disconnect_s"])
