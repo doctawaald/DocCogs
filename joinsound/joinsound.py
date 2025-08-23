@@ -20,7 +20,7 @@ class GuildState:
     last_connected_channel_id: Optional[int] = None
     session: int = 0
     disconnect_task: Optional[asyncio.Task] = None
-    connect_cooldown_until: float = 0.0  # epoch seconds to throttle reconnects after a failure
+    connect_cooldown_until: float = 0.0  # epoch seconds
 
 class JoinSound(commands.Cog):
     """Speelt een join sound wanneer een user een voice channel joint."""
@@ -28,15 +28,18 @@ class JoinSound(commands.Cog):
     default_guild = {
         "enabled": True,
         "url": "",
-        "volume": 0.6,            # 0.0 - 2.0 (fader; 2.0 = x2)
-        "auto_disconnect_s": 8,   # na X s disconnecten als we alleen voor de joinsound connecten
+        "volume": 0.6,            # 0.0–2.0 standaard; plafond is max_volume
+        "max_volume": 2.0,        # 1.0–4.0 (plafond voor volume-setting)
+        "overdrive": False,       # gebruik ffmpeg pre-gain als er >2.0 nodig is
+        "limiter": True,          # alimiter na overdrive om clippen te beperken
+        "auto_disconnect_s": 8,   # disconnect als we enkel voor joinsound joined zijn
         "ignore_bots": True,
-        "min_humans": 1,          # speel alleen als er minstens 1 human joined (excl. bots)
+        "min_humans": 1,
         "source": "url",          # 'url' of 'file'
-        "file_name": "",          # relatieve bestandsnaam in cog data dir
-        "max_filesize_mb": 1,     # upload hard limit (MB)
-        "max_duration_s": 6,      # maximale duur (sec) voor uploads (0=uit)
-        "enforce_duration": True  # vereis ffprobe check op duur
+        "file_name": "",
+        "max_filesize_mb": 1,     # upload limiet
+        "max_duration_s": 6,      # 0=uit
+        "enforce_duration": True  # ffprobe check
     }
 
     def __init__(self, bot: Red):
@@ -86,17 +89,44 @@ class JoinSound(commands.Cog):
             try:
                 vol = float(value)
             except ValueError:
-                return await ctx.send("Geef een getal tussen **0.0** en **2.0**.")
-            vol = max(0.0, min(2.0, vol))  # laat x2 toe
+                return await ctx.send("Geef een getal.")
+            cfg = await self.config.guild(ctx.guild).all()
+            maxvol = float(cfg.get("max_volume", 2.0))
+            vol = max(0.0, min(maxvol, vol))
             await self.config.guild(ctx.guild).volume.set(vol)
-            await ctx.send(f"🔊 Volume (fader) op **{vol:.2f}** gezet. (Max 2.0 = x2)")
+            await ctx.send(f"🔊 Volume (fader) op **{vol:.2f}** gezet. (Plafond {maxvol:.1f})")
+
+        elif key in ("maxvol", "max_volume"):
+            try:
+                mv = float(value)
+            except ValueError:
+                return await ctx.send("Geef een getal **1.0–4.0**.")
+            mv = max(1.0, min(4.0, mv))
+            # als huidig volume erboven zit -> clamp het ook
+            cur = await self.config.guild(ctx.guild).volume()
+            if cur > mv:
+                await self.config.guild(ctx.guild).volume.set(mv)
+            await self.config.guild(ctx.guild).max_volume.set(mv)
+            await ctx.send(f"🧢 Max volume-plafond op **{mv:.1f}x** gezet.")
+
+        elif key in ("overdrive", "od"):
+            v = value.strip().lower()
+            val = v in {"1","true","yes","on","aan"}
+            await self.config.guild(ctx.guild).overdrive.set(val)
+            await ctx.send(f"⚡ Overdrive **{'aan' if val else 'uit'}**. (Pre-gain via FFmpeg voor >2.0)")
+
+        elif key in ("limiter", "limit"):
+            v = value.strip().lower()
+            val = v in {"1","true","yes","on","aan"}
+            await self.config.guild(ctx.guild).limiter.set(val)
+            await ctx.send(f"🛡️ Limiter **{'aan' if val else 'uit'}**.")
 
         elif key in ("timeout", "autodisconnect", "auto_disconnect_s"):
             try:
                 secs = int(value)
             except ValueError:
                 return await ctx.send("Geef een geheel aantal seconden.")
-            secs = max(2, min(600, secs))
+            secs = max(2, min(600, secs))  # 2–600s (10 min)
             await self.config.guild(ctx.guild).auto_disconnect_s.set(secs)
             await ctx.send(f"⏱️ Auto-disconnect op **{secs}s** gezet.")
 
@@ -132,14 +162,10 @@ class JoinSound(commands.Cog):
             await self.config.guild(ctx.guild).enforce_duration.set(val)
             await ctx.send(f"⏱️ Duurcontrole **{'aan' if val else 'uit'}**.")
 
-        # Backwards compat: boost keys afvangen en uitleggen
-        elif key in ("boost", "gain", "boostdb", "gaindb"):
-            await ctx.send("ℹ️ `boost` is uitgefaseerd. Gebruik enkel `volume` (0.0–2.0).")
-
         else:
             await ctx.send(
-                "Onbekend. Keys: `url`, `volume (0.0–2.0)`, `timeout`, `source (url|file)`, "
-                "`maxsize`, `maxdur`, `enforcedur`."
+                "Keys: `url`, `volume`, `maxvol`, `overdrive on|off`, `limiter on|off`, "
+                "`timeout`, `source (url|file)`, `maxsize`, `maxdur`, `enforcedur`."
             )
 
     @joinsound.command(name="upload")
@@ -150,7 +176,7 @@ class JoinSound(commands.Cog):
         """
         cfg = await self.config.guild(ctx.guild).all()
         if not ctx.message.attachments:
-            return await ctx.send("⚠️ Voeg een **MP3/WAV/OGG/M4A/WEBM** toe als bijlage bij je bericht.")
+            return await ctx.send("⚠️ Voeg een **MP3/WAV/OGG/M4A/WEBM** bijlage toe.")
 
         att = ctx.message.attachments[0]
         lower = att.filename.lower()
@@ -184,7 +210,7 @@ class JoinSound(commands.Cog):
             if dur is None:
                 await ctx.send("ℹ️ `ffprobe` niet gevonden of geen duur uitleesbaar; sla length-check over.")
             else:
-                if dur > max_s + 0.15:  # kleine marge
+                if dur > max_s + 0.15:
                     with contextlib.suppress(Exception):
                         target.unlink(missing_ok=True)
                     return await ctx.send(
@@ -193,24 +219,28 @@ class JoinSound(commands.Cog):
 
         await self.config.guild(ctx.guild).file_name.set(target.name)
         await self.config.guild(ctx.guild).source.set("file")
-        await ctx.send(f"✅ Bestand opgeslagen als `{target.name}` en bron op **file** gezet.\n"
+        await ctx.send(f"✅ Opgeslagen als `{target.name}` en bron op **file** gezet.\n"
                        f"Test met: `[p]joinsound test`")
 
     @joinsound.command(name="file")
     async def _fileinfo(self, ctx: commands.Context):
         """Toon info over het huidige lokale bestand."""
         cfg = await self.config.guild(ctx.guild).all()
-        src = cfg["source"]
-        fname = cfg["file_name"] or "(niet ingesteld)"
-        url = cfg["url"] or "(niet ingesteld)"
-        vol = cfg["volume"]
-        ms = cfg["max_filesize_mb"]
-        md = cfg["max_duration_s"]
         await ctx.send(
-            f"🔎 Source: **{src}** | 🔊 Volume: **{vol:.2f}** (max 2.0)\n"
-            f"📁 File: `{fname}`\n"
-            f"🔗 URL: `{url}`\n"
-            f"📦 Max size: **{ms:.1f} MB** | ⏱️ Max duur: **{md}s**"
+            "🔎 Source: **{src}** | 🔊 Volume: **{vol:.2f}** | 🧢 MaxVol: **{mv:.1f}x**\n"
+            "⚡ Overdrive: **{od}** | 🛡️ Limiter: **{lm}**\n"
+            "📁 File: `{fn}` | 🔗 URL: `{url}`\n"
+            "📦 Max size: **{ms:.1f} MB** | ⏱️ Max duur: **{md}s**".format(
+                src=cfg["source"],
+                vol=cfg["volume"],
+                mv=cfg["max_volume"],
+                od="aan" if cfg["overdrive"] else "uit",
+                lm="aan" if cfg["limiter"] else "uit",
+                fn=cfg["file_name"] or "(niet ingesteld)",
+                url=cfg["url"] or "(niet ingesteld)",
+                ms=cfg["max_filesize_mb"],
+                md=cfg["max_duration_s"],
+            )
         )
 
     @joinsound.command(name="test")
@@ -254,11 +284,11 @@ class JoinSound(commands.Cog):
 
         state = self._state(guild)
         async with state.lock:
-            # Re-validate na lock (race-free)
+            # Re-validate
             if after.channel is None or after.channel != joined_channel:
                 return
 
-            # Respecteer cooldown na mislukte connect (bv. 4006)
+            # Respect cooldown (bv. na 4006)
             now = time.time()
             if now < state.connect_cooldown_until:
                 return
@@ -281,7 +311,6 @@ class JoinSound(commands.Cog):
             state.session += 1
             vc = await self._connect_once(joined_channel)
             if not vc:
-                # Stel een korte cooldown in (voorkom dubbel connecten/handshakes)
                 state.connect_cooldown_until = time.time() + 3.0
                 return
 
@@ -299,7 +328,6 @@ class JoinSound(commands.Cog):
         return False
 
     async def _connect_once(self, channel: discord.VoiceChannel) -> Optional[discord.VoiceClient]:
-        """Eén connect poging (voorkomt 'dubbele' connects)."""
         try:
             if channel is None:
                 return None
@@ -310,20 +338,17 @@ class JoinSound(commands.Cog):
             return None
 
     async def _schedule_auto_disconnect(self, state: GuildState, vc: discord.VoiceClient, seconds: int):
-        """Cancel oude timer en plan een nieuwe, gebonden aan de huidige sessie en VC."""
-        # Cancel vorige taak
         if state.disconnect_task and not state.disconnect_task.done():
             state.disconnect_task.cancel()
             with contextlib.suppress(Exception):
                 await state.disconnect_task
 
-        seconds = max(2, min(120, int(seconds)))
+        seconds = max(2, min(600, int(seconds)))  # 2–600s
         session_id = state.session
 
         async def _runner():
             try:
                 await asyncio.sleep(seconds)
-                # Alleen disconnecten als dit nog steeds de huidige sessie/VC is en we idle zijn
                 cur_vc = getattr(vc.guild, "voice_client", None)
                 if session_id != state.session:
                     return
@@ -341,32 +366,73 @@ class JoinSound(commands.Cog):
 
         state.disconnect_task = asyncio.create_task(_runner())
 
+    def _ffmpeg_filter(self, mult: float, limiter: bool) -> str:
+        """
+        Bouw de -filter:a string.
+        mult: gain multiplier (1.0 = geen pre-gain)
+        limiter: of we alimiter toepassen.
+        """
+        chain = []
+        if abs(mult - 1.0) > 1e-3:
+            chain.append(f"volume={mult:.3f}")
+        if limiter:
+            chain.append("alimiter=limit=0.97")  # mild limiter tegen clippen
+        return ",".join(chain) if chain else ""
+
     async def _safe_play(self, vc: discord.VoiceClient, conf: dict) -> bool:
         if self._is_busy(vc):
             return False
 
         src = conf.get("source", "url")
-        vol = float(conf.get("volume", 0.6))
-        vol = max(0.0, min(2.0, vol))  # x2 toegestaan
+        desired = float(conf.get("volume", 0.6))
+        maxvol = float(conf.get("max_volume", 2.0))
+        overdrive = bool(conf.get("overdrive", False))
+        limiter = bool(conf.get("limiter", True))
+
+        # Clamp naar plafond
+        v = max(0.0, min(maxvol, desired))
+
+        # Strategie:
+        # - t/m 2.0: gebruik PCMVolumeTransformer (snappy, low-latency)
+        # - boven 2.0: als overdrive aan staat -> ffmpeg pre-gain = v/2.0, PCM vol = 2.0
+        #   anders: laat PCM boven 2.0 toe (kan harder clippen op client); we accepteren dat.
+        ff_pre_gain = 1.0
+        pcm_vol = v
+        use_ff_filter = False
+        if v > 2.0:
+            if overdrive:
+                ff_pre_gain = v / 2.0
+                pcm_vol = 2.0
+                use_ff_filter = True
+            else:
+                # Geen overdrive: direct PCMVolumeTransformer > 2.0 (kan clippen)
+                pcm_vol = v
 
         try:
+            ffopts = {}
+            filter_str = self._ffmpeg_filter(ff_pre_gain, limiter) if use_ff_filter else ""
             if src == "file":
-                fname = (conf.get("file_name") or "").strip()
-                if not fname:
-                    return False
-                path = cog_data_path(self) / fname
+                path = cog_data_path(self) / (conf.get("file_name") or "")
                 if not path.exists():
                     return False
-                # Lokaal bestand: reconnect flags niet nodig
-                pcm = discord.FFmpegPCMAudio(str(path), options="-vn")
+                if filter_str:
+                    ffopts = {"options": f'-vn -filter:a "{filter_str}"'}
+                else:
+                    ffopts = {"options": "-vn"}
+                pcm = discord.FFmpegPCMAudio(str(path), **ffopts)
             else:
                 url: str = conf.get("url") or ""
                 if not url:
                     return False
-                pcm = discord.FFmpegPCMAudio(url, before_options=FFMPEG_BEFORE, options="-vn")
+                if filter_str:
+                    ffopts = {"before_options": FFMPEG_BEFORE, "options": f'-vn -filter:a "{filter_str}"'}
+                else:
+                    ffopts = {"before_options": FFMPEG_BEFORE, "options": "-vn"}
+                pcm = discord.FFmpegPCMAudio(url, **ffopts)
 
             source = discord.PCMVolumeTransformer(pcm)
-            source.volume = vol  # discord.py accepteert tot 2.0
+            # Discord.py accepteert technisch >1.0; we ondersteunen tot max_volume (≤4.0)
+            source.volume = pcm_vol
         except Exception:
             return False
 
@@ -404,7 +470,6 @@ class JoinSound(commands.Cog):
 
         state = self._state(guild)
         async with state.lock:
-            # Respecteer cooldown
             now = time.time()
             if now < state.connect_cooldown_until:
                 return
@@ -416,7 +481,6 @@ class JoinSound(commands.Cog):
                         return
                     await self._safe_disconnect(vc)
 
-            # start nieuwe sessie voor deze actie
             state.session += 1
 
             if not (vc and vc.is_connected()):
@@ -432,9 +496,6 @@ class JoinSound(commands.Cog):
     # ===================== Utilities =====================
 
     async def _probe_duration(self, path: Path) -> Optional[float]:
-        """
-        Lees duur via ffprobe; return None als ffprobe niet beschikbaar of fout.
-        """
         try:
             proc = await asyncio.create_subprocess_exec(
                 "ffprobe",
