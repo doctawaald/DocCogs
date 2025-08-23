@@ -11,8 +11,6 @@ from redbot.core.bot import Red
 from redbot.core.data_manager import cog_data_path
 
 FFMPEG_BEFORE = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
-FFMPEG_NET_OPTIONS = {"before_options": FFMPEG_BEFORE, "options": "-vn"}
-FFMPEG_FILE_OPTIONS = {"options": "-vn"}  # lokaal bestand: reconnect flags niet nodig
 
 VALID_EXTS = (".mp3", ".wav", ".ogg", ".m4a", ".webm")
 
@@ -27,10 +25,11 @@ class JoinSound(commands.Cog):
     default_guild = {
         "enabled": True,
         "url": "",
-        "volume": 0.6,           # 0.0 - 1.0
-        "auto_disconnect_s": 8,  # na zoveel seconden disconnecten als we alleen voor de join sound connecten
+        "volume": 0.6,           # 0.0 - 1.0 (fader)
+        "boost": 1.0,            # 1.0 - 3.0 (preamp via FFmpeg)
+        "auto_disconnect_s": 8,  # na X s disconnecten als we alleen voor de joinsound connecten
         "ignore_bots": True,
-        "min_humans": 1,         # speel alleen als er minstens 1 human joined (excl bots)
+        "min_humans": 1,         # speel alleen als er minstens 1 human joined (excl. bots)
         "source": "url",         # 'url' of 'file'
         "file_name": ""          # relatieve bestandsnaam in cog data dir
     }
@@ -40,7 +39,6 @@ class JoinSound(commands.Cog):
         self.config = Config.get_conf(self, identifier=0xB005EE51)
         self.config.register_guild(**self.default_guild)
         self._guild_states: Dict[int, GuildState] = {}
-        # zorg dat de datamap bestaat
         try:
             cog_data_path(self).mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -72,13 +70,7 @@ class JoinSound(commands.Cog):
         await ctx.send("⏸️ JoinSound **uitgeschakeld**.")
 
     @joinsound.command(name="set")
-    async def _set(
-        self,
-        ctx: commands.Context,
-        key: str,
-        *,
-        value: str
-    ):
+    async def _set(self, ctx: commands.Context, key: str, *, value: str):
         key = key.lower()
         if key == "url":
             await self.config.guild(ctx.guild).url.set(value.strip())
@@ -91,7 +83,15 @@ class JoinSound(commands.Cog):
                 return await ctx.send("Geef een getal tussen 0.0 en 1.0.")
             vol = max(0.0, min(1.0, vol))
             await self.config.guild(ctx.guild).volume.set(vol)
-            await ctx.send(f"🔊 Volume op **{vol:.2f}** gezet.")
+            await ctx.send(f"🔊 Volume (fader) op **{vol:.2f}** gezet.")
+        elif key in ("boost", "gain"):
+            try:
+                boost = float(value)
+            except ValueError:
+                return await ctx.send("Geef een getal tussen **1.0** en **3.0** (bijv. 1.6 ≈ +4 dB).")
+            boost = max(0.5, min(3.0, boost))  # sta eventueel iets onder 1.0 toe als demping
+            await self.config.guild(ctx.guild).boost.set(boost)
+            await ctx.send(f"💥 Boost (preamp) op **{boost:.2f}x** gezet. Let op: te hoog kan clippen.")
         elif key in ("timeout", "autodisconnect", "auto_disconnect_s"):
             try:
                 secs = int(value)
@@ -107,7 +107,7 @@ class JoinSound(commands.Cog):
             await self.config.guild(ctx.guild).source.set(v)
             await ctx.send(f"🎚️ Bron gezet op **{v}**.")
         else:
-            await ctx.send("Onbekende sleutel. Gebruik `url`, `volume`, `timeout`, of `source` (url|file).")
+            await ctx.send("Onbekende sleutel. Gebruik `url`, `volume`, `boost`, `timeout`, of `source` (url|file).")
 
     @joinsound.command(name="upload")
     async def _upload(self, ctx: commands.Context, *, name: Optional[str] = None):
@@ -123,14 +123,11 @@ class JoinSound(commands.Cog):
         if not lower.endswith(VALID_EXTS):
             return await ctx.send("❌ Ondersteunde extensies: **.mp3 .wav .ogg .m4a .webm**")
 
-        # optionele simpele limiet om te voorkomen dat er hele albums geüpload worden
         if att.size and att.size > 10 * 1024 * 1024:
             return await ctx.send("❌ Bestand is groter dan 10MB. Gebruik een kortere clip.")
 
-        # Sanitize bestandsnaam
         desired = name.strip() if name else att.filename
         safe = re.sub(r"[^A-Za-z0-9._-]", "_", desired)
-        # forceer extensie uit attachment
         ext = Path(lower).suffix
         if not safe.endswith(ext):
             safe += ext
@@ -145,7 +142,7 @@ class JoinSound(commands.Cog):
 
         await self.config.guild(ctx.guild).file_name.set(target.name)
         await self.config.guild(ctx.guild).source.set("file")
-        await ctx.send(f"✅ Bestaat opgeslagen als `{target.name}` en bron op **file** gezet.\n"
+        await ctx.send(f"✅ Bestand opgeslagen als `{target.name}` en bron op **file** gezet.\n"
                        f"Test met: `[p]joinsound test`")
 
     @joinsound.command(name="file")
@@ -155,10 +152,13 @@ class JoinSound(commands.Cog):
         src = cfg["source"]
         fname = cfg["file_name"] or "(niet ingesteld)"
         url = cfg["url"] or "(niet ingesteld)"
+        vol = cfg["volume"]
+        boost = cfg["boost"]
         await ctx.send(
             f"🔎 Source: **{src}**\n"
             f"📁 File: `{fname}`\n"
-            f"🔗 URL: `{url}`"
+            f"🔗 URL: `{url}`\n"
+            f"🔊 Volume: **{vol:.2f}** | 💥 Boost: **{boost:.2f}x**"
         )
 
     @joinsound.command(name="test")
@@ -254,8 +254,29 @@ class JoinSound(commands.Cog):
                     return None
         return None
 
+    def _ffmpeg_options(self, is_url: bool, boost: float) -> dict:
+        """
+        Bouw de juiste FFmpeg options.
+        - Bij URL's gebruiken we ook BEFORE options (reconnect).
+        - Boost > 1.0 voegt '-af volume=X' toe (X=multiplier).
+        """
+        boost = float(boost or 1.0)
+        base_opts = "-vn"
+        if abs(boost - 1.0) > 1e-3:
+            base_opts = f"{base_opts} -af volume={boost:.3f}"
+        if is_url:
+            return {"before_options": FFMPEG_BEFORE, "options": base_opts}
+        else:
+            return {"options": base_opts}
+
     async def _safe_play(self, vc: discord.VoiceClient, conf: dict) -> bool:
+        if self._is_busy(vc):
+            return False
+
         src = conf.get("source", "url")
+        boost = float(conf.get("boost", 1.0))
+        vol = float(conf.get("volume", 0.6))
+
         try:
             if src == "file":
                 fname = (conf.get("file_name") or "").strip()
@@ -264,21 +285,18 @@ class JoinSound(commands.Cog):
                 path = cog_data_path(self) / fname
                 if not path.exists():
                     return False
-                source = discord.PCMVolumeTransformer(
-                    discord.FFmpegPCMAudio(str(path), **FFMPEG_FILE_OPTIONS)
-                )
+                ffopts = self._ffmpeg_options(is_url=False, boost=boost)
+                pcm = discord.FFmpegPCMAudio(str(path), **ffopts)
             else:
                 url: str = conf.get("url") or ""
                 if not url:
                     return False
-                source = discord.PCMVolumeTransformer(
-                    discord.FFmpegPCMAudio(url, **FFMPEG_NET_OPTIONS)
-                )
-            source.volume = float(conf.get("volume", 0.6))
-        except Exception:
-            return False
+                ffopts = self._ffmpeg_options(is_url=True, boost=boost)
+                pcm = discord.FFmpegPCMAudio(url, **ffopts)
 
-        if self._is_busy(vc):
+            source = discord.PCMVolumeTransformer(pcm)
+            source.volume = max(0.0, min(1.0, vol))
+        except Exception:
             return False
 
         done = asyncio.Event()
