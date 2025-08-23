@@ -4,7 +4,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import discord
 from redbot.core import commands, Config
@@ -23,23 +23,36 @@ class GuildState:
     connect_cooldown_until: float = 0.0  # epoch seconds
 
 class JoinSound(commands.Cog):
-    """Speelt een join sound wanneer een user een voice channel joint."""
+    """Join sound bij voice-joins, met per-user overrides en robuuste voice-handling."""
 
     default_guild = {
+        # gedrag
         "enabled": True,
-        "url": "",
-        "volume": 0.6,            # 0.0–2.0 standaard; plafond is max_volume
-        "max_volume": 2.0,        # 1.0–4.0 (plafond voor volume-setting)
-        "overdrive": False,       # gebruik ffmpeg pre-gain als er >2.0 nodig is
-        "limiter": True,          # alimiter na overdrive om clippen te beperken
-        "auto_disconnect_s": 8,   # disconnect als we enkel voor joinsound joined zijn
         "ignore_bots": True,
         "min_humans": 1,
+        "prefer_user_overrides": True,
+
+        # guild default sound
         "source": "url",          # 'url' of 'file'
-        "file_name": "",
-        "max_filesize_mb": 1,     # upload limiet
+        "url": "",
+        "file_name": "",          # relatieve bestandsnaam in cog data dir
+
+        # volume & limieten
+        "volume": 0.6,            # fader; standaard 0.0–2.0, plafond via max_volume
+        "max_volume": 2.0,        # 1.0–4.0 (volume-plafond per guild)
+        "overdrive": False,       # ffmpeg pre-gain boven 2.0
+        "limiter": True,          # alimiter bij overdrive
+
+        # auto disconnect
+        "auto_disconnect_s": 8,   # clamp 2–600s
+
+        # upload policy
+        "max_filesize_mb": 1,     # hard limit (MB)
         "max_duration_s": 6,      # 0=uit
-        "enforce_duration": True  # ffprobe check
+        "enforce_duration": True, # ffprobe check
+
+        # per-user: user_id(str) -> {"kind":"file","path":...,"disabled":bool} of {"kind":"url","url":...,"disabled":bool}
+        "user_sounds": {}
     }
 
     def __init__(self, bot: Red):
@@ -48,9 +61,13 @@ class JoinSound(commands.Cog):
         self.config.register_guild(**self.default_guild)
         self._guild_states: Dict[int, GuildState] = {}
         try:
-            cog_data_path(self).mkdir(parents=True, exist_ok=True)
+            base = cog_data_path(self)
+            base.mkdir(parents=True, exist_ok=True)
+            (base / "users").mkdir(parents=True, exist_ok=True)
         except Exception:
             pass
+
+    # -------------------- helpers: state --------------------
 
     def _state(self, guild: discord.Guild) -> GuildState:
         gs = self._guild_states.get(guild.id)
@@ -59,7 +76,7 @@ class JoinSound(commands.Cog):
             self._guild_states[guild.id] = gs
         return gs
 
-    # ===================== Commands =====================
+    # -------------------- commands --------------------
 
     @commands.group(name="joinsound")
     @commands.admin_or_permissions(manage_guild=True)
@@ -94,7 +111,7 @@ class JoinSound(commands.Cog):
             maxvol = float(cfg.get("max_volume", 2.0))
             vol = max(0.0, min(maxvol, vol))
             await self.config.guild(ctx.guild).volume.set(vol)
-            await ctx.send(f"🔊 Volume (fader) op **{vol:.2f}** gezet. (Plafond {maxvol:.1f})")
+            await ctx.send(f"🔊 Volume op **{vol:.2f}** gezet. (Plafond {maxvol:.1f})")
 
         elif key in ("maxvol", "max_volume"):
             try:
@@ -102,7 +119,6 @@ class JoinSound(commands.Cog):
             except ValueError:
                 return await ctx.send("Geef een getal **1.0–4.0**.")
             mv = max(1.0, min(4.0, mv))
-            # als huidig volume erboven zit -> clamp het ook
             cur = await self.config.guild(ctx.guild).volume()
             if cur > mv:
                 await self.config.guild(ctx.guild).volume.set(mv)
@@ -113,7 +129,7 @@ class JoinSound(commands.Cog):
             v = value.strip().lower()
             val = v in {"1","true","yes","on","aan"}
             await self.config.guild(ctx.guild).overdrive.set(val)
-            await ctx.send(f"⚡ Overdrive **{'aan' if val else 'uit'}**. (Pre-gain via FFmpeg voor >2.0)")
+            await ctx.send(f"⚡ Overdrive **{'aan' if val else 'uit'}** (pre-gain boven 2.0).")
 
         elif key in ("limiter", "limit"):
             v = value.strip().lower()
@@ -126,7 +142,7 @@ class JoinSound(commands.Cog):
                 secs = int(value)
             except ValueError:
                 return await ctx.send("Geef een geheel aantal seconden.")
-            secs = max(2, min(600, secs))  # 2–600s (10 min)
+            secs = max(2, min(600, secs))  # 2–600s
             await self.config.guild(ctx.guild).auto_disconnect_s.set(secs)
             await ctx.send(f"⏱️ Auto-disconnect op **{secs}s** gezet.")
 
@@ -162,18 +178,40 @@ class JoinSound(commands.Cog):
             await self.config.guild(ctx.guild).enforce_duration.set(val)
             await ctx.send(f"⏱️ Duurcontrole **{'aan' if val else 'uit'}**.")
 
+        elif key in ("preferuser", "prefer_user_overrides"):
+            v = value.strip().lower()
+            val = v in {"1","true","yes","on","aan"}
+            await self.config.guild(ctx.guild).prefer_user_overrides.set(val)
+            await ctx.send(f"👤 Per-user sound **{'heeft voorrang' if val else 'heeft geen voorrang'}**.")
+
         else:
             await ctx.send(
                 "Keys: `url`, `volume`, `maxvol`, `overdrive on|off`, `limiter on|off`, "
-                "`timeout`, `source (url|file)`, `maxsize`, `maxdur`, `enforcedur`."
+                "`timeout`, `source (url|file)`, `maxsize`, `maxdur`, `enforcedur`, `preferuser on|off`."
             )
 
-    @joinsound.command(name="upload")
-    async def _upload(self, ctx: commands.Context, *, name: Optional[str] = None):
-        """
-        Upload een MP3/WAV/OGG/M4A/WEBM als joinsound.
-        Gebruik: stuur een bijlage mee met dit commando.
-        """
+    # ---------- per-user subcommands ----------
+
+    @joinsound.group(name="user")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def _usergroup(self, ctx: commands.Context):
+        """Per-user joinsounds beheren."""
+        pass
+
+    @_usergroup.command(name="url")
+    async def _user_url(self, ctx: commands.Context, member: discord.Member, url: str):
+        """Stel een URL in als joinsound voor een gebruiker."""
+        async with self.config.guild(ctx.guild).user_sounds() as m:
+            prev = m.get(str(member.id))
+            # ruim oude file op als we overschrijven van file -> url
+            if prev and prev.get("kind") == "file":
+                self._try_delete_rel(prev.get("path"))
+            m[str(member.id)] = {"kind": "url", "url": url.strip(), "disabled": False}
+        await ctx.send(f"🔗 Per-user URL ingesteld voor {member.mention}.")
+
+    @_usergroup.command(name="upload")
+    async def _user_upload(self, ctx: commands.Context, member: discord.Member, *, name: Optional[str] = None):
+        """Upload een sound voor een user (voeg MP3/WAV/OGG/M4A/WEBM bijlage toe)."""
         cfg = await self.config.guild(ctx.guild).all()
         if not ctx.message.attachments:
             return await ctx.send("⚠️ Voeg een **MP3/WAV/OGG/M4A/WEBM** bijlage toe.")
@@ -183,7 +221,6 @@ class JoinSound(commands.Cog):
         if not lower.endswith(VALID_EXTS):
             return await ctx.send("❌ Ondersteunde extensies: **.mp3 .wav .ogg .m4a .webm**")
 
-        # Hard size-limit
         limit_bytes = int(float(cfg["max_filesize_mb"]) * 1024 * 1024)
         if att.size and att.size > limit_bytes:
             return await ctx.send(f"❌ Bestand groter dan **{cfg['max_filesize_mb']:.1f} MB**.")
@@ -194,15 +231,17 @@ class JoinSound(commands.Cog):
         if not safe.endswith(ext):
             safe += ext
 
-        data_dir: Path = cog_data_path(self)
-        target = data_dir / safe
+        data_dir: Path = cog_data_path(self) / "users"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        target_name = f"{member.id}_{safe}"
+        target = data_dir / target_name
 
         try:
             await att.save(target)
         except Exception as e:
             return await ctx.send(f"❌ Opslaan mislukt: `{type(e).__name__}: {e}`")
 
-        # Optional: duration check via ffprobe
+        # duur check via ffprobe
         max_s: int = int(cfg.get("max_duration_s", 0))
         enforce = bool(cfg.get("enforce_duration", True))
         if max_s and enforce:
@@ -213,54 +252,89 @@ class JoinSound(commands.Cog):
                 if dur > max_s + 0.15:
                     with contextlib.suppress(Exception):
                         target.unlink(missing_ok=True)
-                    return await ctx.send(
-                        f"❌ Clip te lang: **{dur:.2f}s** > **{max_s}s**. Trim korter en upload opnieuw."
-                    )
+                    return await ctx.send(f"❌ Clip te lang: **{dur:.2f}s** > **{max_s}s**. Trim korter en upload opnieuw.")
 
-        await self.config.guild(ctx.guild).file_name.set(target.name)
-        await self.config.guild(ctx.guild).source.set("file")
-        await ctx.send(f"✅ Opgeslagen als `{target.name}` en bron op **file** gezet.\n"
-                       f"Test met: `[p]joinsound test`")
+        rel_path = f"users/{target_name}"
+        async with self.config.guild(ctx.guild).user_sounds() as m:
+            prev = m.get(str(member.id))
+            # ruim vorige file op als die bestond
+            if prev and prev.get("kind") == "file":
+                self._try_delete_rel(prev.get("path"))
+            m[str(member.id)] = {"kind": "file", "path": rel_path, "disabled": False}
+        await ctx.send(f"✅ Per-user file ingesteld voor {member.mention}: `{target.name}`")
 
-    @joinsound.command(name="file")
-    async def _fileinfo(self, ctx: commands.Context):
-        """Toon info over het huidige lokale bestand."""
+    @_usergroup.command(name="disable")
+    async def _user_disable(self, ctx: commands.Context, member: discord.Member, state: str):
+        """Schakel per-user sound in/uit voor een gebruiker."""
+        v = state.strip().lower()
+        val = v in {"1","true","yes","on","aan","enable"}
+        async with self.config.guild(ctx.guild).user_sounds() as m:
+            us = m.get(str(member.id))
+            if not us:
+                return await ctx.send("ℹ️ Deze user heeft nog geen per-user sound.")
+            us["disabled"] = not val
+        await ctx.send(f"👤 Per-user sound voor {member.mention} **{'ingeschakeld' if val else 'uitgeschakeld'}**.")
+
+    @_usergroup.command(name="remove")
+    async def _user_remove(self, ctx: commands.Context, member: discord.Member):
+        """Verwijder per-user sound volledig (en lokale file opruimen indien nodig)."""
+        async with self.config.guild(ctx.guild).user_sounds() as m:
+            us = m.pop(str(member.id), None)
+        if us and us.get("kind") == "file":
+            self._try_delete_rel(us.get("path"))
+        await ctx.send(f"🗑️ Per-user sound voor {member.mention} verwijderd.")
+
+    @_usergroup.command(name="show")
+    async def _user_show(self, ctx: commands.Context, member: discord.Member):
+        """Toon per-user sound info."""
         cfg = await self.config.guild(ctx.guild).all()
-        await ctx.send(
-            "🔎 Source: **{src}** | 🔊 Volume: **{vol:.2f}** | 🧢 MaxVol: **{mv:.1f}x**\n"
-            "⚡ Overdrive: **{od}** | 🛡️ Limiter: **{lm}**\n"
-            "📁 File: `{fn}` | 🔗 URL: `{url}`\n"
-            "📦 Max size: **{ms:.1f} MB** | ⏱️ Max duur: **{md}s**".format(
-                src=cfg["source"],
-                vol=cfg["volume"],
-                mv=cfg["max_volume"],
-                od="aan" if cfg["overdrive"] else "uit",
-                lm="aan" if cfg["limiter"] else "uit",
-                fn=cfg["file_name"] or "(niet ingesteld)",
-                url=cfg["url"] or "(niet ingesteld)",
-                ms=cfg["max_filesize_mb"],
-                md=cfg["max_duration_s"],
-            )
-        )
+        us = cfg["user_sounds"].get(str(member.id))
+        if not us:
+            return await ctx.send(f"ℹ️ {member.mention} heeft geen per-user sound.")
+        if us.get("kind") == "url":
+            await ctx.send(f"👤 {member.mention}: URL `{us.get('url','')}` | disabled={us.get('disabled', False)}")
+        else:
+            await ctx.send(f"👤 {member.mention}: FILE `{us.get('path','')}` | disabled={us.get('disabled', False)}")
 
-    @joinsound.command(name="test")
-    async def _test(self, ctx: commands.Context):
-        """Speel de joinsound nu in jouw voice channel (zonder te wachten op een join-event)."""
+    @_usergroup.command(name="list")
+    async def _user_list(self, ctx: commands.Context):
+        """Lijst per-user sounds (max 50)."""
+        cfg = await self.config.guild(ctx.guild).all()
+        m = cfg["user_sounds"] or {}
+        if not m:
+            return await ctx.send("ℹ️ Geen per-user sounds ingesteld.")
+        entries = []
+        count = 0
+        for uid, us in m.items():
+            count += 1
+            if count > 50:
+                break
+            kind = us.get("kind")
+            disabled = us.get("disabled", False)
+            if kind == "url":
+                desc = us.get("url", "")
+            else:
+                desc = us.get("path", "")
+            entries.append(f"<@{uid}> — {kind.upper()} — {'DISABLED' if disabled else 'ENABLED'} — {desc}")
+        await ctx.send("📜 Per-user sounds:\n" + "\n".join(entries))
+
+    @_usergroup.command(name="test")
+    async def _user_test(self, ctx: commands.Context, member: discord.Member):
+        """Speel de per-user sound van iemand in jouw voice channel."""
         if not ctx.author.voice or not ctx.author.voice.channel:
             return await ctx.send("Je zit niet in een voicekanaal.")
+        cfg = await self.config.guild(ctx.guild).all()
+        override = self._resolve_user_override(ctx.guild, cfg, member)
+        if not override:
+            return await ctx.send("ℹ️ Geen (ingeschakelde) per-user sound voor deze user.")
         await ctx.message.add_reaction("🎧")
-        await self._play_in_channel(ctx.guild, ctx.author.voice.channel, invoked=True)
+        await self._play_in_channel(ctx.guild, ctx.author.voice.channel, invoked=True, override=override)
         await ctx.message.add_reaction("✅")
 
-    # ===================== Event handler =====================
+    # -------------------- event handler --------------------
 
     @commands.Cog.listener()
-    async def on_voice_state_update(
-        self,
-        member: discord.Member,
-        before: discord.VoiceState,
-        after: discord.VoiceState,
-    ):
+    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         if member is None or member.guild is None:
             return
         guild: discord.Guild = member.guild
@@ -268,7 +342,6 @@ class JoinSound(commands.Cog):
         conf = await self.config.guild(guild).all()
         if not conf["enabled"]:
             return
-
         if conf["ignore_bots"] and member.bot:
             return
 
@@ -282,13 +355,21 @@ class JoinSound(commands.Cog):
             if len(humans) < conf["min_humans"]:
                 return
 
+        # Bepaal welke sound we willen spelen (per-user override of guild default)
+        override = None
+        if conf.get("prefer_user_overrides", True):
+            override = self._resolve_user_override(guild, conf, member)
+        if not override:
+            override = self._resolve_guild_default(conf)
+
+        if not override:
+            return  # niets te spelen
+
         state = self._state(guild)
         async with state.lock:
-            # Re-validate
             if after.channel is None or after.channel != joined_channel:
                 return
 
-            # Respect cooldown (bv. na 4006)
             now = time.time()
             if now < state.connect_cooldown_until:
                 return
@@ -298,7 +379,7 @@ class JoinSound(commands.Cog):
                 if vc.channel.id == joined_channel.id:
                     if self._is_busy(vc):
                         return
-                    played = await self._safe_play(vc, conf)
+                    played = await self._safe_play(vc, conf, override)
                     if played and not self._is_busy(vc):
                         await self._schedule_auto_disconnect(state, vc, conf["auto_disconnect_s"])
                     return
@@ -307,7 +388,6 @@ class JoinSound(commands.Cog):
                         return
                     await self._safe_disconnect(vc)
 
-            # Nieuwe sessie
             state.session += 1
             vc = await self._connect_once(joined_channel)
             if not vc:
@@ -315,11 +395,11 @@ class JoinSound(commands.Cog):
                 return
 
             state.last_connected_channel_id = joined_channel.id
-            played = await self._safe_play(vc, conf)
+            played = await self._safe_play(vc, conf, override)
             if played and not self._is_busy(vc):
                 await self._schedule_auto_disconnect(state, vc, conf["auto_disconnect_s"])
 
-    # ===================== Voice helpers =====================
+    # -------------------- core voice helpers --------------------
 
     def _is_busy(self, vc: discord.VoiceClient) -> bool:
         with contextlib.suppress(Exception):
@@ -366,36 +446,57 @@ class JoinSound(commands.Cog):
 
         state.disconnect_task = asyncio.create_task(_runner())
 
+    # -------------------- sound resolution --------------------
+
+    def _resolve_user_override(self, guild: discord.Guild, cfg: dict, member: discord.Member) -> Optional[Tuple[str, str]]:
+        """Return ('file', full_path) of ('url', url) als per-user sound actief is."""
+        us = (cfg.get("user_sounds") or {}).get(str(member.id))
+        if not us or us.get("disabled"):
+            return None
+        kind = us.get("kind")
+        if kind == "url":
+            url = (us.get("url") or "").strip()
+            return ("url", url) if url else None
+        elif kind == "file":
+            rel = (us.get("path") or "").strip()
+            if not rel:
+                return None
+            p = cog_data_path(self) / rel
+            return ("file", str(p)) if p.exists() else None
+        return None
+
+    def _resolve_guild_default(self, cfg: dict) -> Optional[Tuple[str, str]]:
+        src = cfg.get("source", "url")
+        if src == "url":
+            url = (cfg.get("url") or "").strip()
+            return ("url", url) if url else None
+        else:
+            fname = (cfg.get("file_name") or "").strip()
+            if not fname:
+                return None
+            p = cog_data_path(self) / fname
+            return ("file", str(p)) if p.exists() else None
+
+    # -------------------- playback --------------------
+
     def _ffmpeg_filter(self, mult: float, limiter: bool) -> str:
-        """
-        Bouw de -filter:a string.
-        mult: gain multiplier (1.0 = geen pre-gain)
-        limiter: of we alimiter toepassen.
-        """
         chain = []
         if abs(mult - 1.0) > 1e-3:
             chain.append(f"volume={mult:.3f}")
         if limiter:
-            chain.append("alimiter=limit=0.97")  # mild limiter tegen clippen
+            chain.append("alimiter=limit=0.97")
         return ",".join(chain) if chain else ""
 
-    async def _safe_play(self, vc: discord.VoiceClient, conf: dict) -> bool:
+    async def _safe_play(self, vc: discord.VoiceClient, conf: dict, override: Tuple[str, str]) -> bool:
         if self._is_busy(vc):
             return False
 
-        src = conf.get("source", "url")
         desired = float(conf.get("volume", 0.6))
         maxvol = float(conf.get("max_volume", 2.0))
         overdrive = bool(conf.get("overdrive", False))
         limiter = bool(conf.get("limiter", True))
 
-        # Clamp naar plafond
         v = max(0.0, min(maxvol, desired))
-
-        # Strategie:
-        # - t/m 2.0: gebruik PCMVolumeTransformer (snappy, low-latency)
-        # - boven 2.0: als overdrive aan staat -> ffmpeg pre-gain = v/2.0, PCM vol = 2.0
-        #   anders: laat PCM boven 2.0 toe (kan harder clippen op client); we accepteren dat.
         ff_pre_gain = 1.0
         pcm_vol = v
         use_ff_filter = False
@@ -405,33 +506,25 @@ class JoinSound(commands.Cog):
                 pcm_vol = 2.0
                 use_ff_filter = True
             else:
-                # Geen overdrive: direct PCMVolumeTransformer > 2.0 (kan clippen)
                 pcm_vol = v
 
+        kind, val = override
         try:
-            ffopts = {}
-            filter_str = self._ffmpeg_filter(ff_pre_gain, limiter) if use_ff_filter else ""
-            if src == "file":
-                path = cog_data_path(self) / (conf.get("file_name") or "")
-                if not path.exists():
-                    return False
-                if filter_str:
-                    ffopts = {"options": f'-vn -filter:a "{filter_str}"'}
+            # ffmpeg opts
+            if kind == "file":
+                if use_ff_filter:
+                    ffopts = {"options": f'-vn -filter:a "{self._ffmpeg_filter(ff_pre_gain, limiter)}"'}
                 else:
                     ffopts = {"options": "-vn"}
-                pcm = discord.FFmpegPCMAudio(str(path), **ffopts)
+                pcm = discord.FFmpegPCMAudio(val, **ffopts)
             else:
-                url: str = conf.get("url") or ""
-                if not url:
-                    return False
-                if filter_str:
-                    ffopts = {"before_options": FFMPEG_BEFORE, "options": f'-vn -filter:a "{filter_str}"'}
+                if use_ff_filter:
+                    ffopts = {"before_options": FFMPEG_BEFORE, "options": f'-vn -filter:a "{self._ffmpeg_filter(ff_pre_gain, limiter)}"'}
                 else:
                     ffopts = {"before_options": FFMPEG_BEFORE, "options": "-vn"}
-                pcm = discord.FFmpegPCMAudio(url, **ffopts)
+                pcm = discord.FFmpegPCMAudio(val, **ffopts)
 
             source = discord.PCMVolumeTransformer(pcm)
-            # Discord.py accepteert technisch >1.0; we ondersteunen tot max_volume (≤4.0)
             source.volume = pcm_vol
         except Exception:
             return False
@@ -461,11 +554,14 @@ class JoinSound(commands.Cog):
         with contextlib.suppress(Exception):
             await asyncio.wait_for(vc.disconnect(force=True), timeout=5)
 
-    async def _play_in_channel(
-        self, guild: discord.Guild, channel: discord.VoiceChannel, invoked: bool = False
-    ):
+    async def _play_in_channel(self, guild: discord.Guild, channel: discord.VoiceChannel, invoked: bool = False, override: Optional[Tuple[str, str]] = None):
         conf = await self.config.guild(guild).all()
         if not conf["enabled"] and not invoked:
+            return
+
+        # Als geen override is meegegeven (bv. test van guild default), resolve nu:
+        ov = override or self._resolve_guild_default(conf)
+        if not ov:
             return
 
         state = self._state(guild)
@@ -489,11 +585,19 @@ class JoinSound(commands.Cog):
                     state.connect_cooldown_until = time.time() + 3.0
                     return
 
-            played = await self._safe_play(vc, conf)
+            played = await self._safe_play(vc, conf, ov)
             if played and not self._is_busy(vc):
                 await self._schedule_auto_disconnect(state, vc, conf["auto_disconnect_s"])
 
-    # ===================== Utilities =====================
+    # -------------------- utilities --------------------
+
+    def _try_delete_rel(self, rel: Optional[str]) -> None:
+        if not rel:
+            return
+        p = cog_data_path(self) / rel
+        with contextlib.suppress(Exception):
+            if p.is_file():
+                p.unlink()
 
     async def _probe_duration(self, path: Path) -> Optional[float]:
         try:
