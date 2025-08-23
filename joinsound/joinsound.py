@@ -96,7 +96,7 @@ class JoinSound(commands.Cog):
                 secs = int(value)
             except ValueError:
                 return await ctx.send("Geef een geheel aantal seconden.")
-            secs = max(2, min(120, secs))
+            secs = max(2, min(600, secs))
             await self.config.guild(ctx.guild).auto_disconnect_s.set(secs)
             await ctx.send(f"⏱️ Auto-disconnect op **{secs}s** gezet.")
 
