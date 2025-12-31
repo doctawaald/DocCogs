@@ -22,10 +22,10 @@ GAME_ALIASES = {
     "PUBG: Battlegrounds": ["pubg", "plunkbat"],
 
     # --- SURVIVAL & CRAFTING ---
-    "Minecraft": ["mc", "mine", "craft", "minecraft", "blokjes"],
+    "Minecraft": ["mc", "mine", "craft", "minecraft"],
     "Terraria": ["terra", "terraria"],
     "Rust": ["rust"],
-    "Ark: Survival Ascended": ["ark", "asa", "ase", "dinos"],
+    "Ark: Survival Ascended": ["ark", "asa", "ase"],
     "Valheim": ["valheim", "viking"],
     "Raft": ["raft"],
     "Palworld": ["pal", "pals", "palworld", "pokemonmetguns"],
@@ -38,8 +38,7 @@ GAME_ALIASES = {
     "Lethal Company": ["lethal", "lc", "company", "lethalcompany"],
     "Phasmophobia": ["phas", "phasmo", "ghosts"],
     "Dead by Daylight": ["dbd", "deadby", "deadbydaylight"],
-    "Sons of the Forest": ["sotf", "sons", "forest", "forest2"],
-    "The Forest": ["theforest", "forest1"],
+    "Sons of the Forest": ["sotf", "sons", "forest"],
     "Content Warning": ["content", "warning", "cw", "camera"],
     "Left 4 Dead 2": ["l4d2", "l4d"],
     "Deep Rock Galactic": ["drg", "deeprock", "rockandstone", "dwarves"],
@@ -51,7 +50,6 @@ GAME_ALIASES = {
     # --- SOCIAL & PARTY ---
     "Among Us": ["amogus", "au", "sus", "among", "impostor"],
     "The Jackbox Party Pack": ["jackbox", "jb", "jack", "box"],
-    "Gartic Phone": ["gartic", "phone", "tekenen"],
     "Fall Guys": ["fall", "guys", "fallguys", "beans"],
     "Pummel Party": ["pummel", "party"],
     "Golf It!": ["golfit", "golf"],
@@ -59,23 +57,15 @@ GAME_ALIASES = {
     # --- MOBA & STRATEGY ---
     "League of Legends": ["lol", "league", "leagueoflegends"],
     "Dota 2": ["dota"],
-    "Civilization VI": ["civ", "civ6", "civilization"],
-    "Age of Empires IV": ["aoe", "aoe4", "ageofempires"],
 
     # --- SPORTS & RACING ---
     "Rocket League": ["rocket", "rl", "rocketleague", "cars"],
-    "EA Sports FC (FIFA)": ["fifa", "eafc", "fc24", "fc25", "voetbal"],
-    "F1 24": ["f1", "formule1", "formula1"],
-    "Forza Horizon 5": ["forza", "fh5", "horizon"],
     "Mario Kart": ["mario", "mariokart", "kart"],
 
     # --- RPG & MMO ---
     "World of Warcraft": ["wow", "warcraft"],
-    "Final Fantasy XIV": ["ffxiv", "ff14"],
     "Baldur's Gate 3": ["bg3", "baldur", "baldurs"],
-    "Diablo IV": ["diablo", "d4", "diablo4"],
     "Path of Exile": ["poe", "path"],
-    "Elden Ring": ["elden", "ring", "eldenring"],
     "Grand Theft Auto V": ["gta", "gta5", "gtav", "gtaonline"]
 }
 
