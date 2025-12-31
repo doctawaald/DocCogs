@@ -1,0 +1,11 @@
+{
+    "author": ["dOCTAWAALd"],
+    "version": "1.0.0",
+    "description": "Laat spelers via DM stemmen op hun favoriete games voor een game night.",
+    "install_msg": "Bedankt voor het installeren van de GameNight cog! Gebruik !gn help om te beginnen.",
+    "short": "Stemmen voor Game Nights via DM.",
+    "requirements": [],
+    "tags": ["voting", "games", "utility"],
+    "min_bot_version": "3.4.0",
+    "hidden": false
+}
