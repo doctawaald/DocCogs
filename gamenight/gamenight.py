@@ -1,117 +1,123 @@
-from redbot.core import commands
+from redbot.core import commands, Config
 from collections import defaultdict
 import discord
 import re
-import difflib # <--- De magische library voor typefouten
+import difflib
+import asyncio
+import random
 
-# --- CONFIGURATIE ---
+# --- CONFIGURATION: ALIAS LIST ---
+# I kept the Dutch aliases (like 'blokjes') just in case, 
+# but the logic is now English-focused.
 GAME_ALIASES = {
     # SHOOTERS
-    "Call of Duty": ["cod", "mw3", "mw2", "warzone", "bo6", "blackops"],
-    "Counter-Strike 2": ["cs2", "cs", "csgo", "counterstrike"],
-    "Valorant": ["val", "valo", "valorant"],
-    "Overwatch 2": ["ow", "ow2", "overwatch"],
-    "Fortnite": ["fn", "fort", "build", "fortnite", "fortnight"],
-    "Apex Legends": ["apex", "apexlegends"],
-    "Tom Clancy's Rainbow Six Siege": ["r6", "siege", "rainbow", "rss"],
-    "Escape from Tarkov": ["eft", "tarkov"],
-    "Destiny 2": ["destiny", "d2"],
-    "Halo Infinite": ["halo", "infinite"],
-    "The Finals": ["finals"],
-    "PUBG: Battlegrounds": ["pubg", "plunkbat"],
+    "Call of Duty": ["cod", "mw3", "mw2", "warzone", "bo6", "blackops", "callofduty", "shooter"],
+    "Counter-Strike 2": ["cs2", "cs", "csgo", "counterstrike", "globaloffensive", "cstrike"],
+    "Valorant": ["val", "valo", "valorant", "valerant"],
+    "Overwatch 2": ["ow", "ow2", "overwatch", "overwatch2"],
+    "Fortnite": ["fn", "fort", "build", "fortnite", "fortnight", "fornite", "fourtnite", "fortnitet"],
+    "Apex Legends": ["apex", "apexlegends", "apax"],
+    "Tom Clancy's Rainbow Six Siege": ["r6", "siege", "rainbow", "rss", "rainbowsix", "rainbow6"],
+    "Escape from Tarkov": ["eft", "tarkov", "tarkof"],
+    "Destiny 2": ["destiny", "d2", "destiny2"],
+    "Halo Infinite": ["halo", "infinite", "masterchief"],
+    "The Finals": ["finals", "thefinals"],
+    "PUBG: Battlegrounds": ["pubg", "plunkbat", "battlegrounds"],
 
     # SURVIVAL & CRAFTING
-    "Minecraft": ["mc", "mine", "craft", "minecraft", "blokjes"],
-    "Terraria": ["terra", "terraria"],
-    "Rust": ["rust"],
-    "Ark: Survival Ascended": ["ark", "asa", "ase", "dinos"],
-    "Valheim": ["valheim", "viking"],
-    "Raft": ["raft"],
-    "Palworld": ["pal", "pals", "palworld", "pokemon"],
-    "DayZ": ["dayz"],
-    "7 Days to Die": ["7days", "7d2d", "7dtd"],
-    "No Man's Sky": ["nms", "nomanssky"],
-    "Project Zomboid": ["pz", "zomboid"],
+    "Minecraft": ["mc", "mine", "craft", "minecraft", "mincraft", "maincraft", "blokjes"],
+    "Terraria": ["terra", "terraria", "teraria"],
+    "Rust": ["rust", "rustgame"],
+    "Ark: Survival Ascended": ["ark", "asa", "ase", "dinos", "ark2"],
+    "Valheim": ["valheim", "viking", "valheim"],
+    "Raft": ["raft", "vlotje"],
+    "Palworld": ["pal", "pals", "palworld", "pokemon", "palword"],
+    "DayZ": ["dayz", "days", "day z"],
+    "7 Days to Die": ["7days", "7d2d", "7dtd", "seven days"],
+    "No Man's Sky": ["nms", "nomanssky", "noman"],
+    "Project Zomboid": ["pz", "zomboid", "zombies"],
 
     # HORROR & CO-OP
-    "Lethal Company": ["lethal", "lc", "company", "lethalcompany"],
-    "The Outlast Trials": ["trials", "tot", "outlast", "outlasttrials"],
-    "Phasmophobia": ["phas", "phasmo", "ghosts", "phasmophobia"],
-    "Dead by Daylight": ["dbd", "deadby", "deadbydaylight"],
-    "Sons of the Forest": ["sotf", "sons", "forest", "forest2"],
-    "Content Warning": ["content", "warning", "cw", "camera"],
-    "Left 4 Dead 2": ["l4d2", "l4d"],
-    "Deep Rock Galactic": ["drg", "deeprock", "rockandstone", "dwarves"],
-    "Helldivers 2": ["helldivers", "hd2", "democracy"],
-    "R.E.P.O.": ["repo", "r.e.p.o"],
-    "Sea of Thieves": ["sot", "sea", "thieves", "pirates"],
-    "Garry's Mod": ["gmod", "garrys"],
+    "Lethal Company": ["lethal", "lc", "company", "lethalcompany", "leathal", "lethalcomp"],
+    "The Outlast Trials": ["trials", "tot", "outlast", "outlasttrials", "outlas", "out last", "trails", "triels"],
+    "Phasmophobia": ["phas", "phasmo", "ghosts", "phasmophobia", "phasmofobia", "fasmophobia"],
+    "Dead by Daylight": ["dbd", "deadby", "deadbydaylight", "dead by"],
+    "Sons of the Forest": ["sotf", "sons", "forest", "forest2", "sonsoftheforest"],
+    "Content Warning": ["content", "warning", "cw", "camera", "contentwarning"],
+    "Left 4 Dead 2": ["l4d2", "l4d", "left4dead"],
+    "Deep Rock Galactic": ["drg", "deeprock", "rockandstone", "dwarves", "deep rock"],
+    "Helldivers 2": ["helldivers", "hd2", "democracy", "helldivers2"],
+    "R.E.P.O.": ["repo", "r.e.p.o", "repo game"],
+    "Sea of Thieves": ["sot", "sea", "thieves", "pirates", "seaofthieves"],
+    "Garry's Mod": ["gmod", "garrys", "garry"],
     
     # SOCIAL & PARTY
-    "Among Us": ["amogus", "au", "sus", "among", "impostor"],
+    "Among Us": ["amogus", "au", "sus", "among", "impostor", "amongus"],
     "The Jackbox Party Pack": ["jackbox", "jb", "jack", "box"],
-    "Fall Guys": ["fall", "guys", "fallguys", "beans"],
-    "Pummel Party": ["pummel", "party"],
+    "Fall Guys": ["fall", "guys", "fallguys", "beans", "fallguy"],
+    "Pummel Party": ["pummel", "party", "pummelparty"],
     "Golf It!": ["golfit", "golf"],
 
     # MOBA & STRATEGY
-    "League of Legends": ["lol", "league", "leagueoflegends"],
-    "Dota 2": ["dota"],
+    "League of Legends": ["lol", "league", "leagueoflegends", "leauge"],
+    "Dota 2": ["dota", "dota2"],
 
     # SPORTS & RACING
-    "Rocket League": ["rocket", "rl", "rocketleague", "cars", "voetbalauto"],
-    "Mario Kart": ["mario", "mariokart", "kart"],
+    "Rocket League": ["rocket", "rl", "rocketleague", "cars", "soccer"],
+    "Mario Kart": ["mario", "mariokart", "kart", "race"],
 
     # RPG & MMO
-    "World of Warcraft": ["wow", "warcraft"],
-    "Palia": ["palia"], 
-    "Baldur's Gate 3": ["bg3", "baldur", "baldurs"],
-    "Path of Exile": ["poe", "path"],
-    "Grand Theft Auto V": ["gta", "gta5", "gtav", "gtaonline"]
+    "World of Warcraft": ["wow", "warcraft", "worldofwarcraft"],
+    "Palia": ["palia", "pallia"], 
+    "Baldur's Gate 3": ["bg3", "baldur", "baldurs", "gate3"],
+    "Path of Exile": ["poe", "path", "pathofexile"],
+    "Grand Theft Auto V": ["gta", "gta5", "gtav", "gtaonline", "gta 5"]
 }
 
 class GameNight(commands.Cog):
-    """Marco-proof voting system."""
+    """The Ultimate Game Night Plugin: Clean, Secret & Stats."""
 
     def __init__(self, bot):
         self.bot = bot
         self.votes = {}
         self.is_open = False
         self.weighted_mode = True 
+        
+        # Database setup
+        self.config = Config.get_conf(self, identifier=847372839210)
+        default_global = {
+            "game_wins": {}, 
+            "total_sessions": 0
+        }
+        self.config.register_global(**default_global)
 
     def normalize_game_name(self, user_input):
-        """
-        Probeert input te matchen. Geeft terug: (GecorrigeerdeNaam, WasHetEenGok)
-        """
+        """Marco-proof name recognition."""
         clean_input = user_input.strip().lower()
         if not clean_input:
             return None, False
 
-        # 1. Exacte check (Clean input vs Aliases)
+        # 1. Exact check
         for official_name, aliases in GAME_ALIASES.items():
             if clean_input == official_name.lower():
                 return official_name, False
             if clean_input in aliases:
                 return official_name, False
 
-        # 2. Marco-Proof Fuzzy Match (De 'Gok' fase)
-        # We maken een lijst van ALLE woorden die we kennen (officiële namen + aliassen)
+        # 2. Fuzzy Match
         all_possibilities = {}
         for name, aliases in GAME_ALIASES.items():
             all_possibilities[name.lower()] = name
             for a in aliases:
                 all_possibilities[a] = name
         
-        # difflib zoekt de beste match. 'cutoff=0.6' betekent 60% gelijkenis nodig.
         matches = difflib.get_close_matches(clean_input, all_possibilities.keys(), n=1, cutoff=0.6)
         
         if matches:
-            best_match_key = matches[0]
-            official_name = all_possibilities[best_match_key]
-            return official_name, True # True betekent: We hebben het gecorrigeerd
+            official_name = all_possibilities[matches[0]]
+            return official_name, True 
 
-        # 3. Geen match gevonden? Dan is het een nieuwe/onbekende game.
-        # We maken hem gewoon netjes (Hoofdletters).
+        # 3. Fallback
         return user_input.strip().title(), False
 
     @commands.group(name="gn", invoke_without_command=True)
@@ -121,19 +127,21 @@ class GameNight(commands.Cog):
     @gamenight.command(name="mode")
     @commands.admin_or_permissions(administrator=True)
     async def gn_mode(self, ctx):
+        """Switch between 3-point and 1-point mode."""
         self.weighted_mode = not self.weighted_mode
-        status = "**AAN** (3-2-1)" if self.weighted_mode else "**UIT** (1-1-1)"
-        await ctx.send(f"⚖️ Bonuspunten systeem staat nu {status}.")
+        status = "**ON** (3-2-1)" if self.weighted_mode else "**OFF** (1-1-1)"
+        await ctx.send(f"⚖️ Bonus point system is now {status}.")
 
     @gamenight.command(name="open")
     @commands.admin_or_permissions(administrator=True)
     async def gn_open(self, ctx):
+        """Reset votes and open the voting lines."""
         self.is_open = True
         self.votes.clear()
-        rules = "🥇 3 pnt | 🥈 2 pnt | 🥉 1 pnt" if self.weighted_mode else "Elke stem is 1 punt."
+        rules = "🥇 3 pts | 🥈 2 pts | 🥉 1 pt" if self.weighted_mode else "Every vote is 1 point."
         embed = discord.Embed(
-            title="🎮 Game Night Stembus Geopend!",
-            description=f"Stuur een **DM** met `!stem Game 1, Game 2, Game 3`.\n\n{rules}",
+            title="🎮 Game Night Voting Open!",
+            description=f"Send me a **DM** with `!vote Game 1, Game 2, Game 3`.\n\n{rules}",
             color=discord.Color.green()
         )
         await ctx.send(embed=embed)
@@ -141,17 +149,19 @@ class GameNight(commands.Cog):
     @gamenight.command(name="close")
     @commands.admin_or_permissions(administrator=True)
     async def gn_close(self, ctx):
+        """Close the voting lines."""
         self.is_open = False
-        await ctx.send("🛑 De stembus is gesloten!")
+        await ctx.send("🛑 Voting is closed!")
 
     @commands.command()
-    async def stem(self, ctx, *, games_input: str):
+    async def vote(self, ctx, *, games_input: str):
+        """Vote via DM: !vote Game1, Game2..."""
         if ctx.guild is not None:
             await ctx.message.delete(delay=1)
-            return await ctx.send(f"{ctx.author.mention}, stuur dit in een DM! 🤫", delete_after=5)
+            return await ctx.send(f"{ctx.author.mention}, please send this in a DM! 🤫", delete_after=5)
 
         if not self.is_open:
-            return await ctx.send("⛔ De stembus is gesloten.")
+            return await ctx.send("⛔ Voting is currently closed.")
 
         raw_games = games_input.split(',')
         clean_games = []
@@ -166,23 +176,20 @@ class GameNight(commands.Cog):
                         corrections.append(f"'{g.strip()}' ➡️ **{final_name}**")
 
         if not clean_games:
-            return await ctx.send("Ik snapte geen enkele game. Gebruik komma's: `!stem Game A, Game B`")
+            return await ctx.send("No valid games found. Please use commas.")
 
         clean_games = clean_games[:3]
         self.votes[ctx.author.id] = clean_games
         
-        # Feedback Bericht
-        msg = "✅ **Stemmen Ontvangen!**\n"
-        
-        # Laat Marco weten dat we hem geholpen hebben
+        msg = "✅ **Votes Received!**\n"
         if corrections:
             msg += "\n🪄 *Autocorrect:* " + ", ".join(corrections) + "\n\n"
 
-        msg += "**Jouw lijstje:**\n"
+        msg += "**Your list:**\n"
         for i, game in enumerate(clean_games, 1):
             if self.weighted_mode:
                 points = 4 - i
-                msg += f"#{i} **{game}** ({points} pnt)\n"
+                msg += f"#{i} **{game}** ({points} pts)\n"
             else:
                 msg += f"- **{game}**\n"
         
@@ -190,16 +197,43 @@ class GameNight(commands.Cog):
 
     @gamenight.command(name="status")
     async def gn_status(self, ctx):
+        """Check how many people voted."""
         if not self.votes:
-            return await ctx.send("Nog niemand heeft gestemd.")
+            return await ctx.send("No one has voted yet.")
         count = len(self.votes)
-        await ctx.send(f"🗳️ Er hebben al **{count}** mensen gestemd.")
+        await ctx.send(f"🗳️ Currently, **{count}** people have voted.")
 
-    @gamenight.command(name="uitslag")
+    @gamenight.command(name="history")
+    async def gn_history(self, ctx):
+        """View the Hall of Fame."""
+        stats = await self.config.game_wins()
+        sessions = await self.config.total_sessions()
+
+        if not stats:
+            return await ctx.send("No history available yet.")
+
+        sorted_stats = sorted(stats.items(), key=lambda item: item[1], reverse=True)
+
+        embed = discord.Embed(title="📜 Game Night History", color=discord.Color.purple())
+        desc = f"*Total sessions: {sessions}*\n\n"
+        
+        for i, (game, wins) in enumerate(sorted_stats, 1):
+            if i == 1: icon = "👑"
+            elif i == 2: icon = "🥈"
+            elif i == 3: icon = "🥉"
+            else: icon = "🔹"
+            desc += f"{icon} **{game}**: won {wins}x\n"
+            if i >= 10: break
+
+        embed.description = desc
+        await ctx.send(embed=embed)
+
+    @gamenight.command(name="results")
     @commands.admin_or_permissions(administrator=True)
-    async def gn_uitslag(self, ctx):
+    async def gn_results(self, ctx):
+        """Calculate winner + Tiebreaker + Save."""
         if not self.votes:
-            return await ctx.send("Er is niet gestemd.")
+            return await ctx.send("No votes received.")
 
         scores = defaultdict(int)
         vote_counts = defaultdict(int)
@@ -211,19 +245,51 @@ class GameNight(commands.Cog):
                 vote_counts[game] += 1
 
         sorted_games = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+        
+        highest_score = sorted_games[0][1]
+        potential_winners = [g for g, s in sorted_games if s == highest_score]
 
-        embed = discord.Embed(title="🏆 De Uitslag", color=discord.Color.gold())
+        embed = discord.Embed(title="🏆 The Results", color=discord.Color.gold())
         desc = ""
         for i, (game, score) in enumerate(sorted_games, 1):
             votes = vote_counts[game]
             emoji = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"**#{i}**"
-            p_text = "punten" if self.weighted_mode else "stemmen"
-            desc += f"{emoji} **{game}**\n╚ *{score} {p_text}* ({votes} stemmers)\n\n"
+            p_text = "pts" if self.weighted_mode else "votes"
+            
+            # Anonymous results
+            desc += f"{emoji} **{game}**\n╚ {score} {p_text} (by {votes} players)\n\n"
             if i >= 10: break
 
         embed.description = desc
-        embed.set_footer(text=f"Totaal {len(self.votes)} stemmers.")
+        embed.set_footer(text=f"Total: {len(self.votes)} voters.")
         await ctx.send(embed=embed)
+
+        # --- TIEBREAKER & SAVE LOGIC ---
+        final_winner = potential_winners[0]
+
+        if len(potential_winners) > 1:
+            await asyncio.sleep(1)
+            tie_str = ", ".join(potential_winners)
+            await ctx.send(f"⚠️ **TIE!** Between: {tie_str}.\nSpinning the wheel...")
+            await asyncio.sleep(3)
+            final_winner = random.choice(potential_winners)
+            
+            embed_tie = discord.Embed(
+                title="🎰 SUDDEN DEATH", 
+                description=f"The wheel stops on...\n# **🎉 {final_winner} 🎉**",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed_tie)
+        else:
+            await ctx.send(f"🎉 The winner is clear: **{final_winner}**!")
+
+        # Save to DB
+        async with self.config.game_wins() as wins:
+            current = wins.get(final_winner, 0)
+            wins[final_winner] = current + 1
+        
+        count = await self.config.total_sessions()
+        await self.config.total_sessions.set(count + 1)
 
 async def setup(bot):
     await bot.add_cog(GameNight(bot))
