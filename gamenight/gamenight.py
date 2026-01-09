@@ -67,7 +67,8 @@ GAME_ALIASES = {
     # RPG & MMO
     "World of Warcraft": ["wow", "warcraft", "worldofwarcraft"],
     "Palia": ["palia", "pallia"], 
-    "Baldur's Gate 3": ["bg3", "baldur", "baldurs", "gate3"],
+    "Baldur's Gate 3": ["bg3", "baldur", "baldurs"],
+    "Wildgate": ["wg", "wildgate", "gate"],
     "Path of Exile": ["poe", "path", "pathofexile"],
     "Grand Theft Auto V": ["gta", "gta5", "gtav", "gtaonline", "gta 5"]
 }
