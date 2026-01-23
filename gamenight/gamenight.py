@@ -21,6 +21,7 @@ GAME_ALIASES = {
     "Halo Infinite": ["halo", "infinite", "masterchief"],
     "The Finals": ["finals", "thefinals"],
     "PUBG: Battlegrounds": ["pubg", "plunkbat", "battlegrounds"],
+    "Borderlands": ["borderlands", "bl", "bl2", "bl3", "border", "tiny tina", "wonderlands"],
 
     # SURVIVAL & CRAFTING
     "Minecraft": ["mc", "mine", "craft", "minecraft", "mincraft", "maincraft", "blokjes"],
@@ -34,6 +35,8 @@ GAME_ALIASES = {
     "7 Days to Die": ["7days", "7d2d", "7dtd", "seven days"],
     "No Man's Sky": ["nms", "nomanssky", "noman"],
     "Project Zomboid": ["pz", "zomboid", "zombies"],
+    "Hytale": ["hytale", "hy", "tale"],
+    "Voyagers of Nera": ["von", "nera", "voyagers", "voyager", "voyagersofnera"],
 
     # HORROR & CO-OP
     "Lethal Company": ["lethal", "lc", "company", "lethalcompany", "leathal", "lethalcomp"],
@@ -51,10 +54,14 @@ GAME_ALIASES = {
     
     # SOCIAL & PARTY
     "Among Us": ["amogus", "au", "sus", "among", "impostor", "amongus"],
+    "Lockdown Protocol": ["lockdown", "protocol", "lp", "lockdownprotocol"],
     "The Jackbox Party Pack": ["jackbox", "jb", "jack", "box"],
     "Fall Guys": ["fall", "guys", "fallguys", "beans", "fallguy"],
     "Pummel Party": ["pummel", "party", "pummelparty"],
     "Golf It!": ["golfit", "golf"],
+    "Golf With Your Friends": ["gwyf", "golfwithfriends", "golf friends", "golfwith"],
+    "Gang Beasts": ["gang", "beasts", "gangbeasts", "gelly"],
+    "Dale & Dawson Stationery Supplies": ["dale", "dawson", "ddss", "stationery", "manager", "daleanddawson"],
 
     # MOBA & STRATEGY
     "League of Legends": ["lol", "league", "leagueoflegends", "leauge"],
@@ -67,8 +74,7 @@ GAME_ALIASES = {
     # RPG & MMO
     "World of Warcraft": ["wow", "warcraft", "worldofwarcraft"],
     "Palia": ["palia", "pallia"], 
-    "Baldur's Gate 3": ["bg3", "baldur", "baldurs"],
-    "Wildgate": ["wg", "wildgate", "gate"],
+    "Baldur's Gate 3": ["bg3", "baldur", "baldurs", "gate3"],
     "Path of Exile": ["poe", "path", "pathofexile"],
     "Grand Theft Auto V": ["gta", "gta5", "gtav", "gtaonline", "gta 5"]
 }
