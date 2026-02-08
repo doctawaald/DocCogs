@@ -87,6 +87,7 @@ class GameNight(commands.Cog):
         self.votes = {}
         self.is_open = False
         self.weighted_mode = True 
+        self.negative_mode = False # Nieuwe variabele voor Veto
         
         # Database setup
         self.config = Config.get_conf(self, identifier=847372839210)
@@ -137,16 +138,34 @@ class GameNight(commands.Cog):
         status = "**ON** (3-2-1)" if self.weighted_mode else "**OFF** (1-1-1)"
         await ctx.send(f"⚖️ Bonus point system is now {status}.")
 
+    @gamenight.command(name="veto")
+    @commands.admin_or_permissions(administrator=True)
+    async def gn_veto(self, ctx):
+        """Toggle Negative Voting (The 4th game gets -1 point)."""
+        self.negative_mode = not self.negative_mode
+        status = "**ENABLED** 💀 (-1 point possible)" if self.negative_mode else "**DISABLED** ☮️"
+        await ctx.send(f"🛡️ Negative Voting (Veto) is now {status}.")
+
     @gamenight.command(name="open")
     @commands.admin_or_permissions(administrator=True)
     async def gn_open(self, ctx):
         """Reset votes and open the voting lines."""
         self.is_open = True
         self.votes.clear()
-        rules = "🥇 3 pts | 🥈 2 pts | 🥉 1 pt" if self.weighted_mode else "Every vote is 1 point."
+        
+        # Tekst opbouwen op basis van instellingen
+        rules = "🥇 3 pts | 🥈 2 pts | 🥉 1 pt" if self.weighted_mode else "Every positive vote is 1 point."
+        
+        if self.negative_mode:
+            veto_text = "\n💀 **NEGATIVE VOTING ENABLED:**\nYou can add a **4th game** to give it **-1 point**."
+            example = "`!vote Game1, Game2, Game3, HatedGame`"
+        else:
+            veto_text = "\n☮️ **Negative Voting Disabled:**\nOnly your top 3 counts."
+            example = "`!vote Game1, Game2, Game3`"
+
         embed = discord.Embed(
             title="🎮 Game Night Voting Open!",
-            description=f"Send me a **DM** with `!vote Game 1, Game 2, Game 3`.\n\n{rules}",
+            description=f"Send me a **DM** with your choices.\nExample: {example}\n\n{rules}{veto_text}",
             color=discord.Color.green()
         )
         await ctx.send(embed=embed)
@@ -157,14 +176,11 @@ class GameNight(commands.Cog):
         """Close the voting lines AND show results immediately."""
         self.is_open = False
         await ctx.send("🛑 **Voting is closed!** calculating results...")
-        
-        # We triggeren nu direct de uitslag functie!
-        # Zo hoef je niet apart !gn results te typen.
         await self.gn_results(ctx)
 
     @commands.command()
     async def vote(self, ctx, *, games_input: str):
-        """Vote via DM: !vote Game1, Game2..."""
+        """Vote via DM. Supports 4 games if Veto is ON."""
         if ctx.guild is not None:
             await ctx.message.delete(delay=1)
             return await ctx.send(f"{ctx.author.mention}, please send this in a DM! 🤫", delete_after=5)
@@ -187,7 +203,14 @@ class GameNight(commands.Cog):
         if not clean_games:
             return await ctx.send("No valid games found. Please use commas.")
 
-        clean_games = clean_games[:3]
+        # Logic for Veto Mode
+        if self.negative_mode:
+            # We allow up to 4 games
+            clean_games = clean_games[:4]
+        else:
+            # Strict limit of 3
+            clean_games = clean_games[:3]
+
         self.votes[ctx.author.id] = clean_games
         
         msg = "✅ **Votes Received!**\n"
@@ -195,12 +218,18 @@ class GameNight(commands.Cog):
             msg += "\n🪄 *Autocorrect:* " + ", ".join(corrections) + "\n\n"
 
         msg += "**Your list:**\n"
-        for i, game in enumerate(clean_games, 1):
-            if self.weighted_mode:
-                points = 4 - i
-                msg += f"#{i} **{game}** ({points} pts)\n"
+        for i, game in enumerate(clean_games):
+            # i is 0, 1, 2, 3
+            if self.negative_mode and i == 3:
+                # Dit is de 4e game (Negative)
+                msg += f"💀 **{game}** (-1 pt)\n"
             else:
-                msg += f"- **{game}**\n"
+                # Dit zijn de normale games
+                if self.weighted_mode:
+                    points = 3 - i
+                    msg += f"#{i+1} **{game}** ({points} pts)\n"
+                else:
+                    msg += f"- **{game}**\n"
         
         await ctx.send(msg)
 
@@ -240,18 +269,26 @@ class GameNight(commands.Cog):
     @gamenight.command(name="results")
     @commands.admin_or_permissions(administrator=True)
     async def gn_results(self, ctx):
-        """Calculate winner + Tiebreaker + Save."""
+        """Calculate winner + Veto Logic + Tiebreaker."""
         if not self.votes:
             return await ctx.send("No votes received.")
 
         scores = defaultdict(int)
-        vote_counts = defaultdict(int)
+        vote_counts = defaultdict(int) # Tracks positive mentions
+        veto_counts = defaultdict(int) # Tracks negative mentions
 
         for user_games in self.votes.values():
             for i, game in enumerate(user_games):
-                points = (3 - i) if self.weighted_mode else 1
-                scores[game] += points
-                vote_counts[game] += 1
+                
+                # Check of dit de negative vote is (4e game in de lijst, index 3)
+                if self.negative_mode and i == 3:
+                    scores[game] -= 1
+                    veto_counts[game] += 1
+                else:
+                    # Normale positieve punten
+                    points = (3 - i) if self.weighted_mode else 1
+                    scores[game] += points
+                    vote_counts[game] += 1
 
         sorted_games = sorted(scores.items(), key=lambda item: item[1], reverse=True)
         
@@ -261,11 +298,17 @@ class GameNight(commands.Cog):
         embed = discord.Embed(title="🏆 The Results", color=discord.Color.gold())
         desc = ""
         for i, (game, score) in enumerate(sorted_games, 1):
-            votes = vote_counts[game]
-            emoji = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"**#{i}**"
-            p_text = "pts" if self.weighted_mode else "votes"
+            pos_votes = vote_counts[game]
+            neg_votes = veto_counts[game]
             
-            desc += f"{emoji} **{game}**\n╚ {score} {p_text} (by {votes} players)\n\n"
+            emoji = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"**#{i}**"
+            
+            # Text formatting voor stemmen
+            vote_text = f"{pos_votes} up"
+            if neg_votes > 0:
+                vote_text += f", {neg_votes} down 💀"
+            
+            desc += f"{emoji} **{game}**\n╚ **{score} pts** ({vote_text})\n\n"
             if i >= 10: break
 
         embed.description = desc
