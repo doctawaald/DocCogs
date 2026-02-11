@@ -84,17 +84,15 @@ class GameNight(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
-        # Opslag structuur verandert nu naar: 
-        # {user_id: (['Pos1', 'Pos2'], 'NegGame')}
         self.votes = {}
         self.is_open = False
-        self.weighted_mode = True 
-        self.negative_mode = False 
         
         self.config = Config.get_conf(self, identifier=847372839210)
         default_global = {
             "game_wins": {}, 
-            "total_sessions": 0
+            "total_sessions": 0,
+            "weighted_mode": True,   # Nu opgeslagen in DB
+            "veto_mode": False       # Nu opgeslagen in DB
         }
         self.config.register_global(**default_global)
 
@@ -135,16 +133,20 @@ class GameNight(commands.Cog):
     @commands.admin_or_permissions(administrator=True)
     async def gn_mode(self, ctx):
         """Switch between 3-point and 1-point mode."""
-        self.weighted_mode = not self.weighted_mode
-        status = "**ON** (3-2-1)" if self.weighted_mode else "**OFF** (1-1-1)"
+        current = await self.config.weighted_mode()
+        await self.config.weighted_mode.set(not current)
+        
+        status = "**ON** (3-2-1)" if not current else "**OFF** (1-1-1)"
         await ctx.send(f"⚖️ Bonus point system is now {status}.")
 
     @gamenight.command(name="veto")
     @commands.admin_or_permissions(administrator=True)
     async def gn_veto(self, ctx):
         """Toggle Negative Voting."""
-        self.negative_mode = not self.negative_mode
-        status = "**ENABLED** 💀" if self.negative_mode else "**DISABLED** ☮️"
+        current = await self.config.veto_mode()
+        await self.config.veto_mode.set(not current)
+        
+        status = "**ENABLED** 💀" if not current else "**DISABLED** ☮️"
         await ctx.send(f"🛡️ Veto Mode is now {status}.")
 
     @gamenight.command(name="open")
@@ -154,9 +156,13 @@ class GameNight(commands.Cog):
         self.is_open = True
         self.votes.clear()
         
-        rules = "🥇 3 pts | 🥈 2 pts | 🥉 1 pt" if self.weighted_mode else "Every positive vote is 1 point."
+        # Instellingen laden
+        weighted = await self.config.weighted_mode()
+        veto = await self.config.veto_mode()
         
-        if self.negative_mode:
+        rules = "🥇 3 pts | 🥈 2 pts | 🥉 1 pt" if weighted else "Every positive vote is 1 point."
+        
+        if veto:
             veto_text = "\n💀 **VETO ENABLED:** use `#` to downvote a game (-1 pt)."
             example = "`!vote Game1, Game2 # BadGame`"
         else:
@@ -188,19 +194,22 @@ class GameNight(commands.Cog):
         if not self.is_open:
             return await ctx.send("⛔ Voting is currently closed.")
 
-        # --- NIEUWE LOGICA VOOR HET HEKJE # ---
+        # Instellingen checken
+        veto_enabled = await self.config.veto_mode()
+        weighted_mode = await self.config.weighted_mode()
+
         pos_input = games_input
         neg_input = None
 
         if "#" in games_input:
-            if not self.negative_mode:
+            if not veto_enabled:
                 return await ctx.send("⛔ Veto mode is disabled. You cannot use `#` today.")
             
-            parts = games_input.split("#", 1) # Split maximaal 1 keer
+            parts = games_input.split("#", 1) 
             pos_input = parts[0]
             neg_input = parts[1]
 
-        # 1. Verwerk Positieve Votes
+        # 1. Verwerk Positieve Votes (Limit 3)
         raw_pos_games = pos_input.split(',')
         clean_pos_games = []
         corrections = []
@@ -210,27 +219,30 @@ class GameNight(commands.Cog):
                 final_name, was_corrected = self.normalize_game_name(g)
                 if final_name:
                     clean_games_already = [x.lower() for x in clean_pos_games]
-                    if final_name.lower() not in clean_games_already: # Voorkom dubbele in zelfde lijst
+                    if final_name.lower() not in clean_games_already:
                         clean_pos_games.append(final_name)
                         if was_corrected:
                             corrections.append(f"'{g.strip()}' ➡️ **{final_name}**")
 
-        # Maximaal 3 positieve
         clean_pos_games = clean_pos_games[:3]
 
-        # 2. Verwerk Negatieve Vote (Als die er is)
+        # 2. Verwerk Negatieve Vote (Limit 1)
         clean_neg_game = None
         if neg_input and neg_input.strip():
-            final_name, was_corrected = self.normalize_game_name(neg_input)
-            if final_name:
-                clean_neg_game = final_name
-                if was_corrected:
-                    corrections.append(f"'{neg_input.strip()}' ➡️ **{final_name}**")
+            # HIER IS DE FIX: We splitsen ook op komma, en pakken alleen de eerste
+            raw_neg_games = neg_input.split(',')
+            for g in raw_neg_games:
+                if g.strip():
+                    final_name, was_corrected = self.normalize_game_name(g)
+                    if final_name:
+                        clean_neg_game = final_name # We pakken de eerste die we vinden
+                        if was_corrected:
+                            corrections.append(f"'{g.strip()}' ➡️ **{final_name}**")
+                        break # En we stoppen DIRECT. Dus max 1 game.
 
         if not clean_pos_games and not clean_neg_game:
             return await ctx.send("I found no valid games. Usage: `!vote GoodGame, GoodGame # BadGame`")
 
-        # Opslaan: We slaan nu een TUPLE op: (LijstMetPositief, NegatieveString)
         self.votes[ctx.author.id] = (clean_pos_games, clean_neg_game)
         
         # Feedback Bericht
@@ -239,15 +251,13 @@ class GameNight(commands.Cog):
             msg += "\n🪄 *Autocorrect:* " + ", ".join(corrections) + "\n\n"
 
         msg += "**Your list:**\n"
-        # Positief printen
         for i, game in enumerate(clean_pos_games):
-            if self.weighted_mode:
+            if weighted_mode:
                 points = 3 - i
                 msg += f"#{i+1} **{game}** (+{points} pts)\n"
             else:
                 msg += f"- **{game}** (+1 pt)\n"
         
-        # Negatief printen
         if clean_neg_game:
             msg += f"💀 **{clean_neg_game}** (-1 pt)\n"
         
@@ -294,24 +304,21 @@ class GameNight(commands.Cog):
             return await ctx.send("No votes received.")
 
         scores = defaultdict(int)
-        vote_counts = defaultdict(int) # Tracks positive mentions
-        veto_counts = defaultdict(int) # Tracks negative mentions
+        vote_counts = defaultdict(int)
+        veto_counts = defaultdict(int)
 
-        # Loop door alle stemmen (let op de nieuwe structuur!)
+        weighted_mode = await self.config.weighted_mode()
+
         for pos_games, neg_game in self.votes.values():
-            
-            # Punten voor positieve games
             for i, game in enumerate(pos_games):
-                points = (3 - i) if self.weighted_mode else 1
+                points = (3 - i) if weighted_mode else 1
                 scores[game] += points
                 vote_counts[game] += 1
             
-            # Punten voor negatieve game
             if neg_game:
                 scores[neg_game] -= 1
                 veto_counts[neg_game] += 1
 
-        # Sorteren
         sorted_games = sorted(scores.items(), key=lambda item: item[1], reverse=True)
         
         highest_score = sorted_games[0][1]
@@ -325,7 +332,6 @@ class GameNight(commands.Cog):
             
             emoji = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"**#{i}**"
             
-            # Text formatting
             vote_text = f"{pos_votes} up"
             if neg_votes > 0:
                 vote_text += f", {neg_votes} down 💀"
@@ -356,7 +362,6 @@ class GameNight(commands.Cog):
         else:
             await ctx.send(f"🎉 The winner is clear: **{final_winner}**!")
 
-        # Save to DB
         async with self.config.game_wins() as wins:
             current = wins.get(final_winner, 0)
             wins[final_winner] = current + 1
