@@ -87,12 +87,13 @@ class GameNight(commands.Cog):
         self.votes = {}
         self.is_open = False
         
+        # Database setup
         self.config = Config.get_conf(self, identifier=847372839210)
         default_global = {
             "game_wins": {}, 
             "total_sessions": 0,
-            "weighted_mode": True,   # Nu opgeslagen in DB
-            "veto_mode": False       # Nu opgeslagen in DB
+            "weighted_mode": True,   # Opslaan in DB
+            "veto_mode": False       # Opslaan in DB
         }
         self.config.register_global(**default_global)
 
@@ -164,7 +165,8 @@ class GameNight(commands.Cog):
         
         if veto:
             veto_text = "\n💀 **VETO ENABLED:** use `#` to downvote a game (-1 pt)."
-            example = "`!vote Game1, Game2 # BadGame`"
+            # HIER IS DE FIX: Nu toont hij 3 positieve games in het voorbeeld
+            example = "`!vote Game1, Game2, Game3 # BadGame`"
         else:
             veto_text = ""
             example = "`!vote Game1, Game2, Game3`"
@@ -229,19 +231,19 @@ class GameNight(commands.Cog):
         # 2. Verwerk Negatieve Vote (Limit 1)
         clean_neg_game = None
         if neg_input and neg_input.strip():
-            # HIER IS DE FIX: We splitsen ook op komma, en pakken alleen de eerste
+            # BUGFIX: Split op komma, pak alleen de eerste game
             raw_neg_games = neg_input.split(',')
             for g in raw_neg_games:
                 if g.strip():
                     final_name, was_corrected = self.normalize_game_name(g)
                     if final_name:
-                        clean_neg_game = final_name # We pakken de eerste die we vinden
+                        clean_neg_game = final_name # We pakken de eerste
                         if was_corrected:
                             corrections.append(f"'{g.strip()}' ➡️ **{final_name}**")
-                        break # En we stoppen DIRECT. Dus max 1 game.
+                        break # En stoppen direct
 
         if not clean_pos_games and not clean_neg_game:
-            return await ctx.send("I found no valid games. Usage: `!vote GoodGame, GoodGame # BadGame`")
+            return await ctx.send("I found no valid games. Usage: `!vote GoodGame, GoodGame, GoodGame # BadGame`")
 
         self.votes[ctx.author.id] = (clean_pos_games, clean_neg_game)
         
