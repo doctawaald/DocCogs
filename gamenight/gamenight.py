@@ -62,7 +62,8 @@ GAME_ALIASES = {
     "Golf With Your Friends": ["gwyf", "golfwithfriends", "golf friends", "golfwith"],
     "Gang Beasts": ["gang", "beasts", "gangbeasts", "gelly"],
     "Dale & Dawson Stationery Supplies": ["dale", "dawson", "ddss", "stationery", "manager", "daleanddawson"],
-
+    "Schedule 1": ["s1", "sched1", "schedule1", "schedule one", "sched 1", "schedule", "drugs", "weed, "cocaine"],
+    
     # MOBA & STRATEGY
     "League of Legends": ["lol", "league", "leagueoflegends", "leauge"],
     "Dota 2": ["dota", "dota2"],
