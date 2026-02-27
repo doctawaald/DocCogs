@@ -128,7 +128,7 @@ class GameNight(commands.Cog):
 
     async def check_completion(self):
         """Checkt of iedereen die op ✅ heeft geklikt ook echt gestemd heeft."""
-        if not self.is_open or not self.vote_message or not self.vote_channel or self.all_voted_notified:
+        if not self.is_open or not self.vote_message or not self.vote_channel:
             return
 
         try:
@@ -142,20 +142,30 @@ class GameNight(commands.Cog):
             # Lijst van spelers die ✅ hebben geklikt (negeer de bot)
             yes_users = [user async for user in yes_reaction.users() if not user.bot]
 
-            if not yes_users:
+            # --- DE FIX ---
+            # Pas oordelen als minimaal 3 mensen op aanwezig staan.
+            # (Voorkomt dat de host het systeem direct in z'n eentje triggert)
+            if len(yes_users) < 3:
+                self.all_voted_notified = False
                 return 
 
-            # Controleer of al deze users in de self.votes dictionary staan
+            # Controleer wie er nog ontbreken
             missing = [user for user in yes_users if user.id not in self.votes]
 
-            if not missing: # Iedereen heeft gestemd!
-                self.all_voted_notified = True
-                embed = discord.Embed(
-                    title="🎉 All votes are in!",
-                    description="Everyone who RSVP'd has voted.\nThe admin can now use `!gn close`.",
-                    color=discord.Color.blue()
-                )
-                await self.vote_channel.send(embed=embed)
+            if not missing: 
+                # Iedereen heeft gestemd! Stuur het bericht (als we dat nog niet gedaan hebben)
+                if not self.all_voted_notified:
+                    self.all_voted_notified = True
+                    embed = discord.Embed(
+                        title="🎉 All votes are in!",
+                        description="Everyone who RSVP'd has voted.\nThe admin can now use `!gn close`.",
+                        color=discord.Color.blue()
+                    )
+                    await self.vote_channel.send(embed=embed)
+            else:
+                # Er ontbreekt weer iemand (bijv. een nieuwe speler klikte net op ✅)
+                # We resetten de notificatie, zodat hij straks OPNIEUW triggert.
+                self.all_voted_notified = False
 
         except discord.NotFound:
             pass # Bericht is verwijderd
@@ -317,7 +327,7 @@ class GameNight(commands.Cog):
     @gamenight.command(name="status")
     async def gn_status(self, ctx):
         if not self.is_open:
-            return await ctx.send("De stembus is momenteel gesloten.")
+            return await ctx.send("The voting is currently closed.")
             
         count = len(self.votes)
         msg_text = f"🗳️ We currently have **{count}** votes.\n"
