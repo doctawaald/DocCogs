@@ -62,6 +62,7 @@ GAME_ALIASES = {
     "Golf With Your Friends": ["gwyf", "golfwithfriends", "golf friends", "golfwith"],
     "Gang Beasts": ["gang", "beasts", "gangbeasts", "gelly"],
     "Dale & Dawson Stationery Supplies": ["dale", "dawson", "ddss", "stationery", "manager", "daleanddawson"],
+    "Mario Party (4-7)": ["marioparty", "party", "mario", "board"],
 
     # MOBA & STRATEGY
     "League of Legends": ["lol", "league", "leagueoflegends", "leauge"],
@@ -69,7 +70,7 @@ GAME_ALIASES = {
 
     # SPORTS & RACING
     "Rocket League": ["rocket", "rl", "rocketleague", "cars", "soccer"],
-    "Mario Kart": ["mario", "mariokart", "kart", "race"],
+    "Mario Kart": ["karting", "mariokart", "kart", "race"],
 
     # RPG & MMO
     "World of Warcraft": ["wow", "warcraft", "worldofwarcraft"],
