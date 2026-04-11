@@ -57,12 +57,12 @@ GAME_ALIASES = {
     "Among Us": ["amogus", "au", "sus", "among", "impostor", "amongus"],
     "The Jackbox Party Pack": ["jackbox", "jb", "jack", "box"],
     "Fall Guys": ["fall", "guys", "fallguys", "beans", "fallguy"],
-    "Pummel Party": ["pummel", "party", "pummelparty"],
+    "Pummel Party": ["pummel", "pumparty", "pummelparty"],
     "Golf It!": ["golfit", "golf"],
     "Golf With Your Friends": ["gwyf", "golfwithfriends", "golf friends", "golfwith"],
     "Gang Beasts": ["gang", "beasts", "gangbeasts", "gelly"],
     "Dale & Dawson Stationery Supplies": ["dale", "dawson", "ddss", "stationery", "manager", "daleanddawson"],
-    "Mario Party (4-7)": ["marioparty", "party", "mario", "board"],
+    "Mario Party (4-7)": ["marioparty", "mario", "board"],
 
     # MOBA & STRATEGY
     "League of Legends": ["lol", "league", "leagueoflegends", "leauge"],
