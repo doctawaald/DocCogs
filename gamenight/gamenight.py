@@ -37,6 +37,7 @@ GAME_ALIASES = {
     "Project Zomboid": ["pz", "zomboid", "zombies"],
     "Hytale": ["hytale", "hy", "tale"],
     "Voyagers of Nera": ["von", "nera", "voyagers", "voyager", "voyagersofnera"],
+    "Windrose": ["wr", "windrose", "wind", "rose", "pirates"],
 
     # HORROR & CO-OP
     "Lethal Company": ["lethal", "lc", "company", "lethalcompany", "leathal", "lethalcomp"],
