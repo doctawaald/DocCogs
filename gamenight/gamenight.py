@@ -9,32 +9,14 @@ import random
 # --- CONFIGURATION: ALIAS LIST ---
 GAME_ALIASES = {
     # SHOOTERS
-    "Call of Duty": ["cod", "mw3", "mw2", "warzone", "bo6", "blackops", "callofduty", "shooter"],
-    "Counter-Strike 2": ["cs2", "cs", "csgo", "counterstrike", "globaloffensive", "cstrike"],
-    "Valorant": ["val", "valo", "valorant", "valerant"],
-    "Overwatch 2": ["ow", "ow2", "overwatch", "overwatch2"],
     "Fortnite": ["fn", "fort", "build", "fortnite", "fortnight", "fornite", "fourtnite", "fortnitet"],
-    "Apex Legends": ["apex", "apexlegends", "apax"],
-    "Tom Clancy's Rainbow Six Siege": ["r6", "siege", "rainbow", "rss", "rainbowsix", "rainbow6"],
     "Escape from Tarkov": ["eft", "tarkov", "tarkof"],
-    "Destiny 2": ["destiny", "d2", "destiny2"],
-    "Halo Infinite": ["halo", "infinite", "masterchief"],
     "The Finals": ["finals", "thefinals"],
-    "PUBG: Battlegrounds": ["pubg", "plunkbat", "battlegrounds"],
-    "Borderlands": ["borderlands", "bl", "bl2", "bl3", "border", "tiny tina", "wonderlands"],
 
     # SURVIVAL & CRAFTING
     "Minecraft": ["mc", "mine", "craft", "minecraft", "mincraft", "maincraft", "blokjes"],
-    "Terraria": ["terra", "terraria", "teraria"],
-    "Rust": ["rust", "rustgame"],
-    "Ark: Survival Ascended": ["ark", "asa", "ase", "dinos", "ark2"],
     "Valheim": ["valheim", "viking", "valheim"],
-    "Raft": ["raft", "vlotje"],
     "Palworld": ["pal", "pals", "palworld", "pokemon", "palword"],
-    "DayZ": ["dayz", "days", "day z"],
-    "7 Days to Die": ["7days", "7d2d", "7dtd", "seven days"],
-    "No Man's Sky": ["nms", "nomanssky", "noman"],
-    "Project Zomboid": ["pz", "zomboid", "zombies"],
     "Hytale": ["hytale", "hy", "tale"],
     "Voyagers of Nera": ["von", "nera", "voyagers", "voyager", "voyagersofnera"],
     "Windrose": ["wr", "windrose", "wind", "rose", "pirates"],
@@ -43,20 +25,13 @@ GAME_ALIASES = {
     "Lethal Company": ["lethal", "lc", "company", "lethalcompany", "leathal", "lethalcomp"],
     "The Outlast Trials": ["trials", "tot", "outlast", "outlasttrials", "outlas", "out last", "trails", "triels"],
     "Phasmophobia": ["phas", "phasmo", "ghosts", "phasmophobia", "phasmofobia", "fasmophobia"],
-    "Dead by Daylight": ["dbd", "deadby", "deadbydaylight", "dead by"],
     "Sons of the Forest": ["sotf", "sons", "forest", "forest2", "sonsoftheforest"],
-    "Content Warning": ["content", "warning", "cw", "camera", "contentwarning"],
-    "Left 4 Dead 2": ["l4d2", "l4d", "left4dead"],
-    "Deep Rock Galactic": ["drg", "deeprock", "rockandstone", "dwarves", "deep rock"],
-    "Helldivers 2": ["helldivers", "hd2", "democracy", "helldivers2"],
     "R.E.P.O.": ["repo", "r.e.p.o", "repo game"],
     "Sea of Thieves": ["sot", "sea", "thieves", "pirates", "seaofthieves"],
-    "Garry's Mod": ["gmod", "garrys", "garry"],
     "Lockdown Protocol": ["lockdown", "protocol", "lp", "lockdownprotocol"],
     
     # SOCIAL & PARTY
     "Among Us": ["amogus", "au", "sus", "among", "impostor", "amongus"],
-    "The Jackbox Party Pack": ["jackbox", "jb", "jack", "box"],
     "Fall Guys": ["fall", "guys", "fallguys", "beans", "fallguy"],
     "Pummel Party": ["pummel", "pumparty", "pummelparty"],
     "Golf It!": ["golfit", "golf"],
@@ -66,18 +41,13 @@ GAME_ALIASES = {
     "Mario Party (4-7)": ["marioparty", "mario", "board"],
 
     # MOBA & STRATEGY
-    "League of Legends": ["lol", "league", "leagueoflegends", "leauge"],
-    "Dota 2": ["dota", "dota2"],
 
     # SPORTS & RACING
     "Rocket League": ["rocket", "rl", "rocketleague", "cars", "soccer"],
     "Mario Kart": ["karting", "mariokart", "kart", "race"],
 
     # RPG & MMO
-    "World of Warcraft": ["wow", "warcraft", "worldofwarcraft"],
     "Palia": ["palia", "pallia"], 
-    "Baldur's Gate 3": ["bg3", "baldur", "baldurs", "gate3"],
-    "Path of Exile": ["poe", "path", "pathofexile"],
     "Grand Theft Auto V": ["gta", "gta5", "gtav", "gtaonline", "gta 5"],
     
     # SIMULATORS & OTHER
