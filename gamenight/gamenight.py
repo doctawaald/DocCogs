@@ -60,6 +60,20 @@ class GameNight(commands.Cog):
 
         return user_input.strip().title(), False
 
+    async def _get_rsvp_count(self) -> int | None:
+        """Returns the current number of non-bot users who clicked ✅, or None if unavailable."""
+        if not self.vote_message or not self.vote_channel:
+            return None
+        try:
+            msg = await self.vote_channel.fetch_message(self.vote_message.id)
+            yes_reaction = discord.utils.get(msg.reactions, emoji="✅")
+            if not yes_reaction:
+                return 0
+            yes_users = [u async for u in yes_reaction.users() if not u.bot]
+            return len(yes_users)
+        except Exception:
+            return None
+
     async def check_completion(self):
         """Checks whether everyone who clicked ✅ has actually voted.
         Also sends a warning when more than TOO_MANY_PLAYERS_THRESHOLD players are present.
@@ -284,7 +298,38 @@ class GameNight(commands.Cog):
         if clean_neg_game:
             msg += f"💀 **{clean_neg_game}** (-1 pt)\n"
 
+        # ── Personal warning: flag games that don't fit the current group size ──
+        player_count = await self._get_rsvp_count()
+        if player_count is not None and player_count > 0:
+            bad_games = []
+            for game in clean_pos_games:
+                max_p = GAMES.get(game, {}).get("max_players")
+                if max_p is not None and player_count > max_p:
+                    bad_games.append(f"**{game}** (max {max_p} players)")
+            if bad_games:
+                msg += (
+                    f"\n⚠️ **Heads up!** With **{player_count} players** present tonight, "
+                    f"these votes might not be a great idea:\n"
+                    + "\n".join(f"🚫 {g}" for g in bad_games)
+                )
+
         await ctx.send(msg)
+
+        # ── Late vote: notify the channel if "all votes in" was already announced ──
+        if self.all_voted_notified and self.vote_channel:
+            self.all_voted_notified = False  # Reset so it fires again once everyone is done
+            total_votes = len(self.votes)
+            embed = discord.Embed(
+                title="🔄 Vote count updated!",
+                description=(
+                    f"**{ctx.author.display_name}** just submitted a vote after the "
+                    f"\"all votes in\" notification.\n"
+                    f"Total votes received: **{total_votes}**\n\n"
+                    "Hold off on `!gn close` — waiting for everyone to be done again."
+                ),
+                color=discord.Color.yellow(),
+            )
+            await self.vote_channel.send(embed=embed)
 
         # Immediately check whether this was the last missing voter
         await self.check_completion()
