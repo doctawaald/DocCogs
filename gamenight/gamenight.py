@@ -60,44 +60,37 @@ class GameNight(commands.Cog):
 
         return user_input.strip().title(), False
 
-    async def _get_rsvp_count(self):
-        """Fetches the vote message once and returns (player_count, yes_users).
-        Returns (0, []) if unavailable.
-        """
+    async def _get_rsvp_count(self) -> int | None:
+        """Returns the current number of non-bot users who clicked ✅, or None if unavailable."""
         if not self.vote_message or not self.vote_channel:
-            return 0, []
+            return None
         try:
             msg = await self.vote_channel.fetch_message(self.vote_message.id)
             yes_reaction = discord.utils.get(msg.reactions, emoji="✅")
             if not yes_reaction:
-                return 0, []
+                return 0
             yes_users = [u async for u in yes_reaction.users() if not u.bot]
-            return len(yes_users), yes_users
+            return len(yes_users)
         except Exception:
-            return 0, []
+            return None
 
-    async def check_completion(self, prefetched_yes_users=None):
+    async def check_completion(self):
         """Checks whether everyone who clicked ✅ has actually voted.
         Also sends a warning when more than TOO_MANY_PLAYERS_THRESHOLD players are present.
-
-        Pass prefetched_yes_users to avoid an extra fetch_message + users() call
-        (e.g. when called right after _get_rsvp_count in the vote command).
         """
         if not self.is_open or not self.vote_message or not self.vote_channel:
             return
 
         try:
-            if prefetched_yes_users is not None:
-                # Re-use data already fetched by the caller — saves 2 REST calls
-                yes_users = prefetched_yes_users
-            else:
-                # Fetch the current message to get the latest reactions
-                msg = await self.vote_channel.fetch_message(self.vote_message.id)
-                yes_reaction = discord.utils.get(msg.reactions, emoji="✅")
-                if not yes_reaction:
-                    return
-                yes_users = [user async for user in yes_reaction.users() if not user.bot]
+            # Fetch the current message to get the latest reactions
+            msg = await self.vote_channel.fetch_message(self.vote_message.id)
+            yes_reaction = discord.utils.get(msg.reactions, emoji="✅")
 
+            if not yes_reaction:
+                return
+
+            # List of players who clicked ✅ (ignore the bot)
+            yes_users = [user async for user in yes_reaction.users() if not user.bot]
             player_count = len(yes_users)
 
             # ── "Too many players" warning ──────────────────────────────────
