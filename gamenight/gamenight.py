@@ -29,6 +29,10 @@ class GameNight(commands.Cog):
         self.all_voted_notified = False
         self.too_many_notified = False  # Track whether the "too many players" warning has been sent
 
+        # Message tracking for auto-cleanup
+        self.tracked_messages: list[discord.Message] = []
+        self._cleanup_task: asyncio.Task | None = None
+
         # Database setup
         self.config = Config.get_conf(self, identifier=847372839210)
         default_global = {
@@ -38,6 +42,22 @@ class GameNight(commands.Cog):
             "veto_mode": False,
         }
         self.config.register_global(**default_global)
+
+    def _track(self, msg: discord.Message):
+        """Register a message for the post-session cleanup."""
+        if msg is not None:
+            self.tracked_messages.append(msg)
+
+    async def _schedule_cleanup(self, delay_hours: float = 12):
+        """Wait `delay_hours` then bulk-delete all tracked messages."""
+        await asyncio.sleep(delay_hours * 3600)
+        messages = list(self.tracked_messages)
+        self.tracked_messages.clear()
+        for msg in messages:
+            try:
+                await msg.delete()
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass  # Already deleted or missing permissions — ignore
 
     def normalize_game_name(self, user_input):
         clean_input = user_input.strip().lower()
@@ -107,7 +127,8 @@ class GameNight(commands.Cog):
                         ),
                         color=discord.Color.orange(),
                     )
-                    await self.vote_channel.send(embed=embed)
+                    warn_msg = await self.vote_channel.send(embed=embed)
+                    self._track(warn_msg)
             else:
                 # Player count dropped back down — reset so the warning can fire again if needed
                 self.too_many_notified = False
@@ -130,7 +151,8 @@ class GameNight(commands.Cog):
                         description="Everyone who RSVP'd has voted.\nThe admin can now use `!gn close`.",
                         color=discord.Color.blue(),
                     )
-                    await self.vote_channel.send(embed=embed)
+                    all_voted_msg = await self.vote_channel.send(embed=embed)
+                    self._track(all_voted_msg)
             else:
                 # Someone new clicked ✅ — reset so the notification fires again when complete.
                 self.all_voted_notified = False
@@ -182,6 +204,11 @@ class GameNight(commands.Cog):
         self.all_voted_notified = False
         self.too_many_notified = False  # Reset at the start of each new voting round
 
+        # Cancel any leftover cleanup task and start fresh tracking
+        if self._cleanup_task and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
+        self.tracked_messages.clear()
+
         weighted = await self.config.weighted_mode()
         veto = await self.config.veto_mode()
 
@@ -209,6 +236,8 @@ class GameNight(commands.Cog):
         msg = await ctx.send(embed=embed)
         self.vote_message = msg
         self.vote_channel = ctx.channel
+        self._track(msg)  # Track the open-vote embed
+        self._track(ctx.message)  # Track the !gn open command itself
 
         # Add reactions immediately
         await msg.add_reaction("✅")
@@ -220,8 +249,15 @@ class GameNight(commands.Cog):
         self.is_open = False
         self.all_voted_notified = False
         self.too_many_notified = False
-        await ctx.send("🛑 **Voting is closed!** calculating results...")
+        self._track(ctx.message)  # Track the !gn close command itself
+        closing_msg = await ctx.send("🛑 **Voting is closed!** calculating results...")
+        self._track(closing_msg)
         await self.gn_results(ctx)
+
+        # Schedule cleanup 12 hours from now
+        if self._cleanup_task and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
+        self._cleanup_task = asyncio.create_task(self._schedule_cleanup(delay_hours=12))
 
     @commands.command()
     async def vote(self, ctx, *, games_input: str):
@@ -329,7 +365,8 @@ class GameNight(commands.Cog):
                 ),
                 color=discord.Color.yellow(),
             )
-            await self.vote_channel.send(embed=embed)
+            late_msg = await self.vote_channel.send(embed=embed)
+            self._track(late_msg)
 
         # Immediately check whether this was the last missing voter
         await self.check_completion()
@@ -436,7 +473,8 @@ class GameNight(commands.Cog):
 
         embed.description = desc
         embed.set_footer(text=f"Total: {len(self.votes)} voters.")
-        await ctx.send(embed=embed)
+        results_msg = await ctx.send(embed=embed)
+        self._track(results_msg)
 
         # --- TIEBREAKER & SAVE LOGIC ---
         final_winner = potential_winners[0]
@@ -444,7 +482,8 @@ class GameNight(commands.Cog):
         if len(potential_winners) > 1:
             await asyncio.sleep(1)
             tie_str = ", ".join(potential_winners)
-            await ctx.send(f"⚠️ **TIE!** Between: {tie_str}.\nSpinning the wheel...")
+            tie_msg = await ctx.send(f"⚠️ **TIE!** Between: {tie_str}.\nSpinning the wheel...")
+            self._track(tie_msg)
             await asyncio.sleep(3)
             final_winner = random.choice(potential_winners)
 
@@ -453,9 +492,11 @@ class GameNight(commands.Cog):
                 description=f"The wheel stops on...\n# **🎉 {final_winner} 🎉**",
                 color=discord.Color.red(),
             )
-            await ctx.send(embed=embed_tie)
+            tie_result_msg = await ctx.send(embed=embed_tie)
+            self._track(tie_result_msg)
         else:
-            await ctx.send(f"🎉 The winner is clear: **{final_winner}**!")
+            winner_msg = await ctx.send(f"🎉 The winner is clear: **{final_winner}**!")
+            self._track(winner_msg)
 
         async with self.config.game_wins() as wins:
             current = wins.get(final_winner, 0)
