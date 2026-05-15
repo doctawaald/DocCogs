@@ -9,6 +9,30 @@ import time
 
 from .games import GAMES  # Separate game list
 
+class RSVPView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.select(
+        custom_id="gn_rsvp_select",
+        placeholder="When will you be online?",
+        options=[
+            discord.SelectOption(label="Earlier (Before 20:30)", emoji="🕰️", value="Earlier"),
+            discord.SelectOption(label="20:30", emoji="🕣", value="20:30"),
+            discord.SelectOption(label="21:00", emoji="🕘", value="21:00"),
+            discord.SelectOption(label="21:30", emoji="🕤", value="21:30"),
+            discord.SelectOption(label="22:00", emoji="🕙", value="22:00"),
+            discord.SelectOption(label="22:30", emoji="🕥", value="22:30"),
+            discord.SelectOption(label="23:00", emoji="🕚", value="23:00"),
+            discord.SelectOption(label="Later (After 23:00)", emoji="🦉", value="Later"),
+            discord.SelectOption(label="Not joining today", emoji="❌", value="No")
+        ]
+    )
+    async def rsvp_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        val = select.values[0]
+        await self.cog.handle_rsvp(interaction, val)
+
 # Build alias lookup once at import time
 GAME_ALIASES = {name: data["aliases"] for name, data in GAMES.items()}
 
@@ -46,9 +70,68 @@ class GameNight(commands.Cog):
             "vote_message": None,
             "tracked_messages": [],
             "cleanup_time": None,
-            "cleanup_delay_hours": 12.0
+            "cleanup_delay_hours": 12.0,
+            "players": {}
         }
         self.config.register_global(**default_global)
+
+    async def handle_rsvp(self, interaction: discord.Interaction, time_val: str):
+        if not self.is_open:
+            return await interaction.response.send_message("Voting is currently closed.", ephemeral=True)
+            
+        async with self.config.players() as players:
+            if time_val == "No":
+                if str(interaction.user.id) in players:
+                    del players[str(interaction.user.id)]
+                msg = "❌ You are marked as **not joining** today."
+            else:
+                players[str(interaction.user.id)] = time_val
+                msg = f"✅ You are marked as playing at **{time_val}**!"
+                
+        # Send ephemeral confirmation
+        await interaction.response.send_message(msg, ephemeral=True)
+        
+        # Update the embed
+        await self._update_rsvp_embed()
+        
+        # Check completion
+        await self.check_completion()
+
+    async def _update_rsvp_embed(self):
+        if not self.vote_message or not self.vote_channel:
+            return
+            
+        try:
+            msg = await self.vote_channel.fetch_message(self.vote_message.id)
+            if not msg.embeds:
+                return
+                
+            embed = msg.embeds[0]
+            players = await self.config.players()
+            
+            # Rebuild the fields
+            embed.clear_fields()
+            embed.add_field(
+                name="Are you gaming tonight?",
+                value="Select your expected time in the dropdown below.\nSelect ❌ if you can't make it.",
+                inline=False,
+            )
+            
+            if players:
+                # Format player list
+                player_lines = []
+                for uid, t_val in players.items():
+                    player_lines.append(f"• <@{uid}> - {t_val}")
+                    
+                embed.add_field(
+                    name=f"🎮 Players & ETA ({len(players)})",
+                    value="\n".join(player_lines),
+                    inline=False
+                )
+                
+            await msg.edit(embed=embed)
+        except Exception as e:
+            pass
 
     async def cog_load(self):
         """Restore state from config when the bot reboots."""
@@ -78,6 +161,8 @@ class GameNight(commands.Cog):
             now = time.time()
             delay = max(0, cleanup_time - now)
             self._cleanup_task = asyncio.create_task(self._schedule_cleanup(delay_seconds=delay))
+
+        self.bot.add_view(RSVPView(self))
 
     async def _track(self, msg: discord.Message):
         """Register a message for the post-session cleanup."""
@@ -126,37 +211,22 @@ class GameNight(commands.Cog):
         return user_input.strip().title(), False
 
     async def _get_rsvp_count(self) -> int | None:
-        """Returns the current number of non-bot users who clicked ✅, or None if unavailable."""
+        """Returns the current number of users who have set an ETA, or None if unavailable."""
         if not self.vote_message or not self.vote_channel:
             return None
-        try:
-            msg = await self.vote_channel.fetch_message(self.vote_message.id)
-            yes_reaction = discord.utils.get(msg.reactions, emoji="✅")
-            if not yes_reaction:
-                return 0
-            yes_users = [u async for u in yes_reaction.users() if not u.bot]
-            return len(yes_users)
-        except Exception:
-            return None
+        players = await self.config.players()
+        return len(players)
 
     async def check_completion(self):
-        """Checks whether everyone who clicked ✅ has actually voted.
+        """Checks whether everyone who has an ETA has actually voted.
         Also sends a warning when more than TOO_MANY_PLAYERS_THRESHOLD players are present.
         """
         if not self.is_open or not self.vote_message or not self.vote_channel:
             return
 
         try:
-            # Fetch the current message to get the latest reactions
-            msg = await self.vote_channel.fetch_message(self.vote_message.id)
-            yes_reaction = discord.utils.get(msg.reactions, emoji="✅")
-
-            if not yes_reaction:
-                return
-
-            # List of players who clicked ✅ (ignore the bot)
-            yes_users = [user async for user in yes_reaction.users() if not user.bot]
-            player_count = len(yes_users)
+            players = await self.config.players()
+            player_count = len(players)
 
             # ── "Too many players" warning ──────────────────────────────────
             if player_count > TOO_MANY_PLAYERS_THRESHOLD:
@@ -185,7 +255,7 @@ class GameNight(commands.Cog):
                 return
 
             # Check who is still missing a vote
-            missing = [user for user in yes_users if user.id not in self.votes]
+            missing = [uid for uid in players.keys() if int(uid) not in self.votes]
 
             if not missing:
                 # Everyone has voted — send the notification (only once)
@@ -207,19 +277,7 @@ class GameNight(commands.Cog):
         except Exception as e:
             print(f"Error checking completion: {e}")
 
-    @commands.Cog.listener()
-    async def on_raw_reaction_add(self, payload):
-        """Triggers a completion check immediately when someone clicks ✅."""
-        if self.is_open and self.vote_message and payload.message_id == self.vote_message.id:
-            if str(payload.emoji) == "✅" and payload.user_id != self.bot.user.id:
-                await self.check_completion()
 
-    @commands.Cog.listener()
-    async def on_raw_reaction_remove(self, payload):
-        """Re-checks when someone removes their ✅ (e.g. player count drops back down)."""
-        if self.is_open and self.vote_message and payload.message_id == self.vote_message.id:
-            if str(payload.emoji) == "✅" and payload.user_id != self.bot.user.id:
-                await self.check_completion()
 
     @commands.group(name="gn", invoke_without_command=True)
     async def gamenight(self, ctx):
@@ -254,6 +312,7 @@ class GameNight(commands.Cog):
         await self.config.vote_message.set(None)
         await self.config.tracked_messages.set([])
         await self.config.cleanup_time.set(None)
+        await self.config.players.set({})
 
         # Cancel any leftover cleanup task and start fresh tracking
         if self._cleanup_task and not self._cleanup_task.done():
@@ -280,20 +339,17 @@ class GameNight(commands.Cog):
         # The RSVP question
         embed.add_field(
             name="Are you gaming tonight?",
-            value="Click ✅ if you are playing.\nClick ❌ if you can't make it.",
+            value="Select your expected time in the dropdown below.\nSelect ❌ if you can't make it.",
             inline=False,
         )
 
-        msg = await ctx.send(embed=embed)
+        msg = await ctx.send(embed=embed, view=RSVPView(self))
         self.vote_message = msg
         self.vote_channel = ctx.channel
         await self.config.vote_message.set([ctx.channel.id, msg.id])
+
         await self._track(msg)  # Track the open-vote embed
         await self._track(ctx.message)  # Track the !gn open command itself
-
-        # Add reactions immediately
-        await msg.add_reaction("✅")
-        await msg.add_reaction("❌")
 
     @gamenight.command(name="close")
     @commands.admin_or_permissions(administrator=True)
@@ -302,6 +358,15 @@ class GameNight(commands.Cog):
         await self.config.is_open.set(False)
         self.all_voted_notified = False
         self.too_many_notified = False
+        
+        # Remove view from message to prevent further RSVPs
+        if self.vote_message and self.vote_channel:
+            try:
+                msg = await self.vote_channel.fetch_message(self.vote_message.id)
+                await msg.edit(view=None)
+            except discord.NotFound:
+                pass
+                
         await self._track(ctx.message)  # Track the !gn close command itself
         closing_msg = await ctx.send("🛑 **Voting is closed!** calculating results...")
         await self._track(closing_msg)
@@ -483,22 +548,18 @@ class GameNight(commands.Cog):
         msg_text = f"🗳️ We currently have **{count}** votes.\n"
 
         # Check who is still missing
-        if self.vote_message and self.vote_channel:
-            try:
-                msg = await self.vote_channel.fetch_message(self.vote_message.id)
-                yes_reaction = discord.utils.get(msg.reactions, emoji="✅")
-
-                if yes_reaction:
-                    yes_users = [u async for u in yes_reaction.users() if not u.bot]
-                    missing = [u for u in yes_users if u.id not in self.votes]
-
-                    if missing:
-                        missing_names = ", ".join([u.display_name for u in missing])
-                        msg_text += f"\n⏳ **Still waiting for:** {missing_names}"
-                    elif yes_users:
-                        msg_text += "\n✅ **All RSVP'd players have voted!**"
-            except Exception:
-                pass  # Skip if the original message was deleted
+        players = await self.config.players()
+        if players:
+            missing_uids = [uid for uid in players.keys() if int(uid) not in self.votes]
+            if missing_uids:
+                missing_names = []
+                for uid in missing_uids:
+                    user = self.bot.get_user(int(uid))
+                    name = user.display_name if user else f"<@{uid}>"
+                    missing_names.append(name)
+                msg_text += f"\n⏳ **Still waiting for:** {', '.join(missing_names)}"
+            else:
+                msg_text += "\n✅ **All RSVP'd players have voted!**"
 
         await ctx.send(msg_text)
 
