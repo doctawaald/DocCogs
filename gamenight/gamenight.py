@@ -80,12 +80,10 @@ class GameNight(commands.Cog):
             return await interaction.response.send_message("Voting is currently closed.", ephemeral=True)
             
         async with self.config.players() as players:
+            players[str(interaction.user.id)] = time_val
             if time_val == "No":
-                if str(interaction.user.id) in players:
-                    del players[str(interaction.user.id)]
                 msg = "❌ You are marked as **not joining** today."
             else:
-                players[str(interaction.user.id)] = time_val
                 msg = f"✅ You are marked as playing at **{time_val}**!"
                 
         # Send ephemeral confirmation
@@ -117,15 +115,30 @@ class GameNight(commands.Cog):
                 inline=False,
             )
             
-            if players:
+            joining_players = {uid: t_val for uid, t_val in players.items() if t_val != "No"}
+            absent_players = {uid: t_val for uid, t_val in players.items() if t_val == "No"}
+            
+            if joining_players:
                 # Format player list
                 player_lines = []
-                for uid, t_val in players.items():
+                for uid, t_val in joining_players.items():
                     player_lines.append(f"• <@{uid}> - {t_val}")
                     
                 embed.add_field(
-                    name=f"🎮 Players & ETA ({len(players)})",
+                    name=f"🎮 Players & ETA ({len(joining_players)})",
                     value="\n".join(player_lines),
+                    inline=False
+                )
+                
+            if absent_players:
+                # Format absent player list
+                absent_lines = []
+                for uid in absent_players.keys():
+                    absent_lines.append(f"• <@{uid}>")
+                    
+                embed.add_field(
+                    name=f"❌ Not Joining ({len(absent_players)})",
+                    value="\n".join(absent_lines),
                     inline=False
                 )
                 
@@ -215,7 +228,8 @@ class GameNight(commands.Cog):
         if not self.vote_message or not self.vote_channel:
             return None
         players = await self.config.players()
-        return len(players)
+        joining_players = [uid for uid, t_val in players.items() if t_val != "No"]
+        return len(joining_players)
 
     async def check_completion(self):
         """Checks whether everyone who has an ETA has actually voted.
@@ -226,7 +240,8 @@ class GameNight(commands.Cog):
 
         try:
             players = await self.config.players()
-            player_count = len(players)
+            joining_players = {uid: t_val for uid, t_val in players.items() if t_val != "No"}
+            player_count = len(joining_players)
 
             # ── "Too many players" warning ──────────────────────────────────
             if player_count > TOO_MANY_PLAYERS_THRESHOLD:
@@ -255,7 +270,7 @@ class GameNight(commands.Cog):
                 return
 
             # Check who is still missing a vote
-            missing = [uid for uid in players.keys() if int(uid) not in self.votes]
+            missing = [uid for uid in joining_players.keys() if int(uid) not in self.votes]
 
             if not missing:
                 # Everyone has voted — send the notification (only once)
@@ -549,8 +564,9 @@ class GameNight(commands.Cog):
 
         # Check who is still missing
         players = await self.config.players()
-        if players:
-            missing_uids = [uid for uid in players.keys() if int(uid) not in self.votes]
+        joining_players = {uid: t_val for uid, t_val in players.items() if t_val != "No"}
+        if joining_players:
+            missing_uids = [uid for uid in joining_players.keys() if int(uid) not in self.votes]
             if missing_uids:
                 missing_names = []
                 for uid in missing_uids:
