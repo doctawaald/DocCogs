@@ -78,9 +78,39 @@ class GameNight(commands.Cog):
         }
         self.config.register_global(**default_global)
 
+    async def _get_or_restore_vote_message(self):
+        """Retrieve or restore the cached vote message and channel, supporting startup recovery."""
+        if self.vote_message and self.vote_channel:
+            return self.vote_channel, self.vote_message
+            
+        vote_msg_data = await self.config.vote_message()
+        if not vote_msg_data:
+            return None, None
+            
+        channel_id, msg_id = vote_msg_data
+        try:
+            channel = self.vote_channel
+            if not channel:
+                channel = self.bot.get_channel(channel_id)
+                if not channel:
+                    channel = await self.bot.fetch_channel(channel_id)
+                self.vote_channel = channel
+                
+            msg = self.vote_message
+            if not msg:
+                msg = await channel.fetch_message(msg_id)
+                self.vote_message = msg
+                
+            return channel, msg
+        except Exception:
+            return None, None
+
     async def handle_rsvp(self, interaction: discord.Interaction, time_val: str):
+        # Defer immediately to satisfy Discord's 3-second response window and prevent "this interaction failed"
+        await interaction.response.defer(ephemeral=True)
+
         if not self.is_open:
-            return await interaction.response.send_message("Voting is currently closed.", ephemeral=True)
+            return await interaction.followup.send("Voting is currently closed.", ephemeral=True)
             
         async with self.config.players() as players:
             players[str(interaction.user.id)] = time_val
@@ -89,8 +119,8 @@ class GameNight(commands.Cog):
             else:
                 msg = f"✅ You are marked as playing at **{time_val}**!"
                 
-        # Send ephemeral confirmation
-        await interaction.response.send_message(msg, ephemeral=True)
+        # Send ephemeral confirmation as a followup response
+        await interaction.followup.send(msg, ephemeral=True)
         
         # Update the embed
         await self._update_rsvp_embed()
@@ -99,11 +129,11 @@ class GameNight(commands.Cog):
         await self.check_completion()
 
     async def _update_rsvp_embed(self):
-        if not self.vote_message or not self.vote_channel:
+        channel, msg = await self._get_or_restore_vote_message()
+        if not channel or not msg:
             return
             
         try:
-            msg = await self.vote_channel.fetch_message(self.vote_message.id)
             if not msg.embeds:
                 return
                 
@@ -158,21 +188,10 @@ class GameNight(commands.Cog):
         raw_votes = await self.config.votes()
         self.votes = {int(k): v for k, v in raw_votes.items()}
         
-        vote_msg_data = await self.config.vote_message()
-        if vote_msg_data:
-            channel = self.bot.get_channel(vote_msg_data[0])
-            if channel:
-                self.vote_channel = channel
-                try:
-                    self.vote_message = await channel.fetch_message(vote_msg_data[1])
-                except discord.NotFound:
-                    self.vote_message = None
-            else:
-                self.vote_channel = None
-                self.vote_message = None
-        else:
-            self.vote_channel = None
-            self.vote_message = None
+        # We don't eagerly load/fetch the message here during startup hook because the channel cache
+        # might not be fully loaded. Instead, the lazy loader _get_or_restore_vote_message recovers it on-demand.
+        self.vote_channel = None
+        self.vote_message = None
 
         cleanup_time = await self.config.cleanup_time()
         if cleanup_time:
@@ -186,7 +205,14 @@ class GameNight(commands.Cog):
             delay = max(0, reminder_time - now)
             self._reminder_task = asyncio.create_task(self._schedule_reminder(delay_seconds=delay))
 
-        self.bot.add_view(RSVPView(self))
+        # Store view reference so we can stop it on unload to prevent duplicates
+        self.rsvp_view = RSVPView(self)
+        self.bot.add_view(self.rsvp_view)
+
+    def cog_unload(self):
+        """Clean up active persistent views on cog unload to prevent multiple listeners."""
+        if hasattr(self, 'rsvp_view'):
+            self.rsvp_view.stop()
 
     async def _track(self, msg: discord.Message):
         """Register a message for the post-session cleanup."""
@@ -217,7 +243,11 @@ class GameNight(commands.Cog):
         """Wait `delay_seconds` then ping everyone who RSVP'd but hasn't voted yet."""
         await asyncio.sleep(delay_seconds)
         
-        if not self.is_open or not self.vote_channel:
+        if not self.is_open:
+            return
+            
+        channel, msg = await self._get_or_restore_vote_message()
+        if not channel:
             return
             
         players = await self.config.players()
@@ -236,7 +266,7 @@ class GameNight(commands.Cog):
                 ),
                 color=discord.Color.yellow(),
             )
-            reminder_msg = await self.vote_channel.send(embed=embed)
+            reminder_msg = await channel.send(embed=embed)
             await self._track(reminder_msg)
             
         await self.config.reminder_time.set(None)
@@ -264,7 +294,8 @@ class GameNight(commands.Cog):
 
     async def _get_rsvp_count(self) -> int | None:
         """Returns the current number of users who have set an ETA, or None if unavailable."""
-        if not self.vote_message or not self.vote_channel:
+        channel, msg = await self._get_or_restore_vote_message()
+        if not msg or not channel:
             return None
         players = await self.config.players()
         joining_players = [uid for uid, t_val in players.items() if t_val != "No"]
@@ -274,7 +305,11 @@ class GameNight(commands.Cog):
         """Checks whether everyone who has an ETA has actually voted.
         Also sends a warning when more than TOO_MANY_PLAYERS_THRESHOLD players are present.
         """
-        if not self.is_open or not self.vote_message or not self.vote_channel:
+        if not self.is_open:
+            return
+
+        channel, msg = await self._get_or_restore_vote_message()
+        if not msg or not channel:
             return
 
         try:
@@ -296,7 +331,7 @@ class GameNight(commands.Cog):
                         ),
                         color=discord.Color.orange(),
                     )
-                    warn_msg = await self.vote_channel.send(embed=embed)
+                    warn_msg = await channel.send(embed=embed)
                     await self._track(warn_msg)
             else:
                 # Player count dropped back down — reset so the warning can fire again if needed
@@ -320,7 +355,7 @@ class GameNight(commands.Cog):
                         description="Everyone who RSVP'd has voted.\nThe admin can now use `!gn close`.",
                         color=discord.Color.blue(),
                     )
-                    all_voted_msg = await self.vote_channel.send(embed=embed)
+                    all_voted_msg = await channel.send(embed=embed)
                     await self._track(all_voted_msg)
             else:
                 # Someone new clicked ✅ — reset so the notification fires again when complete.
@@ -423,9 +458,9 @@ class GameNight(commands.Cog):
         self.too_many_notified = False
         
         # Remove view from message to prevent further RSVPs
-        if self.vote_message and self.vote_channel:
+        channel, msg = await self._get_or_restore_vote_message()
+        if msg:
             try:
-                msg = await self.vote_channel.fetch_message(self.vote_message.id)
                 await msg.edit(view=None)
             except discord.NotFound:
                 pass
