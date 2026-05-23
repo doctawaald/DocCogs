@@ -205,6 +205,30 @@ class GameNight(commands.Cog):
             delay = max(0, reminder_time - now)
             self._reminder_task = asyncio.create_task(self._schedule_reminder(delay_seconds=delay))
 
+        # Clean up any duplicate RSVPViews from previous reloads (before cog_unload was added)
+        for view in list(self.bot.persistent_views):
+            if view.__class__.__name__ == "RSVPView":
+                try:
+                    view.stop()
+                except Exception:
+                    pass
+                try:
+                    self.bot.persistent_views.remove(view)
+                except Exception:
+                    pass
+                    
+        if hasattr(self.bot, "_connection") and hasattr(self.bot._connection, "_persistent_views"):
+            for view in list(self.bot._connection._persistent_views):
+                if view.__class__.__name__ == "RSVPView":
+                    try:
+                        view.stop()
+                    except Exception:
+                        pass
+                    try:
+                        self.bot._connection._persistent_views.remove(view)
+                    except Exception:
+                        pass
+
         # Store view reference so we can stop it on unload to prevent duplicates
         self.rsvp_view = RSVPView(self)
         self.bot.add_view(self.rsvp_view)
