@@ -57,6 +57,7 @@ class GameNight(commands.Cog):
         # Message tracking for auto-cleanup
         self.tracked_messages: list[discord.Message] = []
         self._cleanup_task: asyncio.Task | None = None
+        self._reminder_task: asyncio.Task | None = None
 
         # Database setup
         self.config = Config.get_conf(self, identifier=847372839210)
@@ -71,6 +72,8 @@ class GameNight(commands.Cog):
             "tracked_messages": [],
             "cleanup_time": None,
             "cleanup_delay_hours": 12.0,
+            "reminder_time": None,
+            "reminder_delay_hours": 2.0,
             "players": {}
         }
         self.config.register_global(**default_global)
@@ -122,7 +125,9 @@ class GameNight(commands.Cog):
                 # Format player list
                 player_lines = []
                 for uid, t_val in joining_players.items():
-                    player_lines.append(f"• <@{uid}> - {t_val}")
+                    has_voted = int(uid) in self.votes
+                    status_emoji = "🎮" if has_voted else "❓"
+                    player_lines.append(f"• <@{uid}> - {t_val} {status_emoji}")
                     
                 embed.add_field(
                     name=f"🎮 Players & ETA ({len(joining_players)})",
@@ -175,6 +180,12 @@ class GameNight(commands.Cog):
             delay = max(0, cleanup_time - now)
             self._cleanup_task = asyncio.create_task(self._schedule_cleanup(delay_seconds=delay))
 
+        reminder_time = await self.config.reminder_time()
+        if reminder_time:
+            now = time.time()
+            delay = max(0, reminder_time - now)
+            self._reminder_task = asyncio.create_task(self._schedule_reminder(delay_seconds=delay))
+
         self.bot.add_view(RSVPView(self))
 
     async def _track(self, msg: discord.Message):
@@ -201,6 +212,34 @@ class GameNight(commands.Cog):
         self.tracked_messages.clear()
         await self.config.tracked_messages.set([])
         await self.config.cleanup_time.set(None)
+
+    async def _schedule_reminder(self, delay_seconds: float):
+        """Wait `delay_seconds` then ping everyone who RSVP'd but hasn't voted yet."""
+        await asyncio.sleep(delay_seconds)
+        
+        if not self.is_open or not self.vote_channel:
+            return
+            
+        players = await self.config.players()
+        joining_players = {uid: t_val for uid, t_val in players.items() if t_val != "No"}
+        missing_uids = [uid for uid in joining_players.keys() if int(uid) not in self.votes]
+        
+        if missing_uids:
+            pings = ", ".join(f"<@{uid}>" for uid in missing_uids)
+            embed = discord.Embed(
+                title="⏳ Voting Reminder!",
+                description=(
+                    f"Hey {pings},\n\n"
+                    f"You have RSVP'd for game night tonight but haven't submitted your votes yet!\n"
+                    f"Please send me a **DM** with your choices so we can decide what to play.\n\n"
+                    f"Example: `!vote Fortnite, Palworld` 🤫"
+                ),
+                color=discord.Color.yellow(),
+            )
+            reminder_msg = await self.vote_channel.send(embed=embed)
+            await self._track(reminder_msg)
+            
+        await self.config.reminder_time.set(None)
 
     def normalize_game_name(self, user_input):
         clean_input = user_input.strip().lower()
@@ -329,9 +368,11 @@ class GameNight(commands.Cog):
         await self.config.cleanup_time.set(None)
         await self.config.players.set({})
 
-        # Cancel any leftover cleanup task and start fresh tracking
+        # Cancel any leftover cleanup/reminder task and start fresh
         if self._cleanup_task and not self._cleanup_task.done():
             self._cleanup_task.cancel()
+        if self._reminder_task and not self._reminder_task.done():
+            self._reminder_task.cancel()
         self.tracked_messages.clear()
 
         weighted = await self.config.weighted_mode()
@@ -366,6 +407,13 @@ class GameNight(commands.Cog):
         await self._track(msg)  # Track the open-vote embed
         await self._track(ctx.message)  # Track the !gn open command itself
 
+        # Schedule voting reminder
+        delay_hours = await self.config.reminder_delay_hours()
+        delay_seconds = delay_hours * 3600
+        reminder_time = time.time() + delay_seconds
+        await self.config.reminder_time.set(reminder_time)
+        self._reminder_task = asyncio.create_task(self._schedule_reminder(delay_seconds=delay_seconds))
+
     @gamenight.command(name="close")
     @commands.admin_or_permissions(administrator=True)
     async def gn_close(self, ctx):
@@ -396,6 +444,11 @@ class GameNight(commands.Cog):
         if self._cleanup_task and not self._cleanup_task.done():
             self._cleanup_task.cancel()
         self._cleanup_task = asyncio.create_task(self._schedule_cleanup(delay_seconds=delay_seconds))
+
+        # Cancel voting reminder
+        if self._reminder_task and not self._reminder_task.done():
+            self._reminder_task.cancel()
+        await self.config.reminder_time.set(None)
 
     @commands.command()
     async def vote(self, ctx, *, games_input: str):
@@ -526,9 +579,12 @@ class GameNight(commands.Cog):
         await self.config.vote_message.set(None)
         await self.config.tracked_messages.set([])
         await self.config.cleanup_time.set(None)
+        await self.config.reminder_time.set(None)
         
         if self._cleanup_task and not self._cleanup_task.done():
             self._cleanup_task.cancel()
+        if self._reminder_task and not self._reminder_task.done():
+            self._reminder_task.cancel()
             
         await ctx.send("🧹 **Gamenight has been fully reset.** (Game history remains intact).")
 
@@ -553,6 +609,57 @@ class GameNight(commands.Cog):
             
         await self.config.cleanup_delay_hours.set(hours)
         await ctx.send(f"⏱️ Cleanup delay updated to **{time_str}**.")
+
+    @gamenight.command(name="remindertime")
+    @commands.admin_or_permissions(administrator=True)
+    async def gn_remindertime(self, ctx, time_str: str):
+        """Set how long before voting reminders are sent (e.g. 2h, 30m)."""
+        time_str = time_str.lower().strip()
+        hours = 0.0
+        
+        match = re.match(r'^(\d+(?:\.\d+)?)([hm])$', time_str)
+        if not match:
+            return await ctx.send("❌ Invalid format. Please use something like `2h` or `30m`.")
+            
+        val, unit = match.groups()
+        val = float(val)
+        
+        if unit == 'h':
+            hours = val
+        elif unit == 'm':
+            hours = val / 60.0
+            
+        await self.config.reminder_delay_hours.set(hours)
+        await ctx.send(f"⏱️ Reminder delay updated to **{time_str}**.")
+
+    @gamenight.command(name="remind")
+    @commands.admin_or_permissions(administrator=True)
+    async def gn_remind(self, ctx):
+        """Manually trigger a voting reminder to all RSVP'd players who haven't voted yet."""
+        if not self.is_open:
+            return await ctx.send("⛔ Voting is currently closed.")
+            
+        players = await self.config.players()
+        joining_players = {uid: t_val for uid, t_val in players.items() if t_val != "No"}
+        missing_uids = [uid for uid in joining_players.keys() if int(uid) not in self.votes]
+        
+        if not missing_uids:
+            return await ctx.send("✅ Everyone who RSVP'd has already voted!")
+            
+        pings = ", ".join(f"<@{uid}>" for uid in missing_uids)
+        embed = discord.Embed(
+            title="⏳ Voting Reminder!",
+            description=(
+                f"Hey {pings},\n\n"
+                f"You have RSVP'd for game night tonight but haven't submitted your votes yet!\n"
+                f"Please send me a **DM** with your choices so we can decide what to play.\n\n"
+                f"Example: `!vote Fortnite, Palworld` 🤫"
+            ),
+            color=discord.Color.yellow(),
+        )
+        reminder_msg = await ctx.send(embed=embed)
+        await self._track(reminder_msg)
+        await self._track(ctx.message)
 
     @gamenight.command(name="status")
     async def gn_status(self, ctx):
