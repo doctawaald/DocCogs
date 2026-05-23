@@ -595,6 +595,9 @@ class GameNight(commands.Cog):
             late_msg = await self.vote_channel.send(embed=embed)
             await self._track(late_msg)
 
+        # Update the RSVP embed to reflect the player's updated voting status (🎮 emoji)
+        await self._update_rsvp_embed()
+
         # Immediately check whether this was the last missing voter
         await self.check_completion()
 
