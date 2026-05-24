@@ -234,9 +234,13 @@ class GameNight(commands.Cog):
         self.bot.add_view(self.rsvp_view)
 
     def cog_unload(self):
-        """Clean up active persistent views on cog unload to prevent multiple listeners."""
+        """Clean up active persistent views and running tasks on cog unload."""
         if hasattr(self, 'rsvp_view'):
             self.rsvp_view.stop()
+        if hasattr(self, '_cleanup_task') and self._cleanup_task and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
+        if hasattr(self, '_reminder_task') and self._reminder_task and not self._reminder_task.done():
+            self._reminder_task.cancel()
 
     async def _track(self, msg: discord.Message):
         """Register a message for the post-session cleanup."""
@@ -246,13 +250,15 @@ class GameNight(commands.Cog):
                 tracked.append([msg.channel.id, msg.id])
 
     async def _schedule_cleanup(self, delay_seconds: float):
-        """Wait `delay_seconds` then bulk-delete all tracked messages."""
+        """Wait `delay_seconds` then bulk-delete all tracked messages, fetching channels if uncached."""
         await asyncio.sleep(delay_seconds)
         
         tracked = await self.config.tracked_messages()
         for channel_id, msg_id in tracked:
             try:
                 channel = self.bot.get_channel(channel_id)
+                if not channel:
+                    channel = await self.bot.fetch_channel(channel_id)
                 if channel:
                     msg = channel.get_partial_message(msg_id)
                     await msg.delete()
