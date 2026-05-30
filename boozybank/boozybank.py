@@ -29,6 +29,8 @@ class BoozyBank(commands.Cog):
             "hard_endreward": 400,
             "cleanup_messages": True,
             "final_cleanup_delay": 5, # default 5 minutes, 0 to disable
+            "daily_limit": 5, # default 5 starts per day
+            "min_players": 2, # default 2 players required
             "default_topics": [
                 "Beer & Breweries",
                 "Classic Cocktails",
@@ -44,7 +46,9 @@ class BoozyBank(commands.Cog):
 
         default_member = {
             "wins": 0,
-            "earnings": 0
+            "earnings": 0,
+            "last_quiz_date": "",
+            "quizzes_today": 0
         }
 
         self.config.register_guild(**default_guild)
@@ -62,6 +66,168 @@ class BoozyBank(commands.Cog):
             return 1.20, "🚀 Quick Speed! (Under 5.00s)"
         else:
             return 1.00, "🐢 Standard Speed (Over 5.00s)"
+
+    async def _check_and_increment_daily_limit(self, ctx) -> bool:
+        """Checks if the user has reached their daily limit of starting quizzes.
+        Returns True if allowed, False if blocked.
+        """
+        # Bypass daily limit for admins and moderators
+        is_admin = ctx.channel.permissions_for(ctx.author).manage_guild or ctx.channel.permissions_for(ctx.author).manage_messages
+        if is_admin:
+            return True
+
+        daily_limit = await self.config.guild(ctx.guild).daily_limit()
+        if daily_limit <= 0:
+            return True
+
+        import datetime
+        current_date = datetime.date.today().isoformat() # "YYYY-MM-DD"
+        
+        last_quiz_date = await self.config.member(ctx.author).last_quiz_date()
+        quizzes_today = await self.config.member(ctx.author).quizzes_today()
+
+        if last_quiz_date != current_date:
+            await self.config.member(ctx.author).last_quiz_date.set(current_date)
+            await self.config.member(ctx.author).quizzes_today.set(1)
+            return True
+        else:
+            if quizzes_today >= daily_limit:
+                await ctx.send(f"❌ {ctx.author.mention}, you have reached your daily limit of **{daily_limit}** trivia games started today! Try again tomorrow.")
+                return False
+            else:
+                await self.config.member(ctx.author).quizzes_today.set(quizzes_today + 1)
+                return True
+
+    async def _delete_message_after(self, msg, delay: float):
+        """Asynchronously deletes a message after a certain delay."""
+        await asyncio.sleep(delay)
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+
+    async def _run_lobby(self, ctx, topic: str, difficulty: str, rounds: int) -> list[discord.Member] | None:
+        """Initiates an interactive matchmaking lobby for players to ready up.
+        Returns the list of joined Members, or None if timed out/cancelled.
+        """
+        min_players = await self.config.guild(ctx.guild).min_players()
+        joined_players = {ctx.author}
+
+        def make_lobby_embed():
+            players_str = ", ".join(p.mention for p in joined_players) if joined_players else "No players joined yet."
+            emb = discord.Embed(
+                title="🎮 **BoozyBank Trivia Lobby** 🎮",
+                color=discord.Color.blue(),
+                description=f"A new trivia game has been created!\n"
+                            f"Click 🟢 to join. At least **{min_players}** player(s) are required.\n"
+                            f"The host or an admin can click 🎮 to start the match!\n\n"
+                            f"**Host:** {ctx.author.mention}\n"
+                            f"**Joined Players ({len(joined_players)}):** {players_str}"
+            )
+            emb.add_field(name="Topic", value=topic, inline=True)
+            emb.add_field(name="Difficulty", value=difficulty.capitalize(), inline=True)
+            emb.add_field(name="Rounds", value="1 (Quick Quiz)" if rounds == 1 else str(rounds), inline=True)
+            emb.set_footer(text="Only the Host or an Admin can click 🎮 to start!")
+            return emb
+
+        lobby_emb = make_lobby_embed()
+        lobby_msg = await ctx.send(embed=lobby_emb)
+
+        lobby_emojis = ["🟢", "🔘", "🔘", "🔘", "🎮"]
+        asyncio.create_task(self._add_reactions_background(ctx, lobby_msg, lobby_emojis))
+
+        timeout = 120
+        start_time = time.time()
+
+        try:
+            while time.time() - start_time < timeout:
+                remaining = timeout - (time.time() - start_time)
+                if remaining <= 0:
+                    break
+
+                add_task = asyncio.create_task(self.bot.wait_for("reaction_add", check=lambda r, u: r.message.id == lobby_msg.id and not u.bot, timeout=remaining))
+                rem_task = asyncio.create_task(self.bot.wait_for("reaction_remove", check=lambda r, u: r.message.id == lobby_msg.id and not u.bot, timeout=remaining))
+
+                done, pending = await asyncio.wait([add_task, rem_task], return_when=asyncio.FIRST_COMPLETED, timeout=remaining)
+                for t in pending:
+                    t.cancel()
+
+                if not done:
+                    break
+
+                for completed in done:
+                    try:
+                        res = completed.result()
+                        # If a reaction was added
+                        if completed == add_task:
+                            reaction, user = res
+                            emoji_str = str(reaction.emoji)
+
+                            if emoji_str == "🟢":
+                                if user not in joined_players:
+                                    joined_players.add(user)
+                                    await lobby_msg.edit(embed=make_lobby_embed())
+                            elif emoji_str == "🎮":
+                                is_admin = ctx.channel.permissions_for(user).manage_guild or ctx.channel.permissions_for(user).manage_messages
+                                if user == ctx.author or is_admin:
+                                    if len(joined_players) < min_players:
+                                        warn = await ctx.send(f"⚠️ **Cannot start!** Need at least **{min_players}** player(s) to start (currently: {len(joined_players)}).")
+                                        asyncio.create_task(self._delete_message_after(warn, 4))
+                                        try:
+                                            await lobby_msg.remove_reaction("🎮", user)
+                                        except Exception:
+                                            pass
+                                    else:
+                                        try:
+                                            await lobby_msg.delete()
+                                        except Exception:
+                                            pass
+                                        return list(joined_players)
+                                else:
+                                    try:
+                                        await lobby_msg.remove_reaction("🎮", user)
+                                    except Exception:
+                                        pass
+                            elif emoji_str == "🔘":
+                                try:
+                                    await lobby_msg.remove_reaction("🔘", user)
+                                except Exception:
+                                    pass
+                        # If a reaction was removed
+                        elif completed == rem_task:
+                            reaction, user = res
+                            emoji_str = str(reaction.emoji)
+
+                            if emoji_str == "🟢":
+                                if user in joined_players and user != ctx.author:
+                                    joined_players.remove(user)
+                                    await lobby_msg.edit(embed=make_lobby_embed())
+
+                    except Exception:
+                        pass
+        except asyncio.CancelledError:
+            try:
+                await lobby_msg.delete()
+            except Exception:
+                pass
+            raise
+
+        # Timeout occurred
+        timeout_emb = discord.Embed(
+            title="⏰ Lobby Timed Out",
+            color=discord.Color.red(),
+            description="The matchmaking lobby timed out after 2 minutes because the game was not started."
+        )
+        try:
+            await lobby_msg.edit(embed=timeout_emb)
+            try:
+                await lobby_msg.clear_reactions()
+            except Exception:
+                pass
+            asyncio.create_task(self._delete_message_after(lobby_msg, 10))
+        except Exception:
+            pass
+        return None
 
     async def _cleanup_round_messages(self, ctx, question_msg, player_msgs):
         """Safely bulk-deletes question embeds and player guesses to keep the channel clean."""
@@ -353,6 +519,10 @@ class BoozyBank(commands.Cog):
         """
         channel = ctx.channel
 
+        # Check daily limit
+        if not await self._check_and_increment_daily_limit(ctx):
+            return
+
         if channel.id in self.active_quizzes:
             await ctx.send("🍻 A quiz is already active in this channel! Solve that one first.")
             return
@@ -377,6 +547,13 @@ class BoozyBank(commands.Cog):
 
         self.active_quizzes.add(channel.id)
         self.running_tasks[channel.id] = asyncio.current_task()
+
+        # Run matchmaking lobby
+        joined_players = await self._run_lobby(ctx, topic, difficulty, 1)
+        if not joined_players:
+            self.active_quizzes.discard(channel.id)
+            self.running_tasks.pop(channel.id, None)
+            return
 
         emoji_beer = "🍻"
         generating_msg = await ctx.send(
@@ -431,10 +608,14 @@ class BoozyBank(commands.Cog):
         winner = None
         elapsed = 0.0
 
+        joined_ids = {p.id for p in joined_players}
+
         def check_msg(m):
             if m.channel.id != ctx.channel.id:
                 return False
             if m.author.bot:
+                return False
+            if m.author.id not in joined_ids:
                 return False
             ans_attempt = m.content.strip().upper()
             if ans_attempt not in ["A", "B", "C", "D"]:
@@ -447,6 +628,8 @@ class BoozyBank(commands.Cog):
             if reaction.message.id != question_msg.id:
                 return False
             if user.bot:
+                return False
+            if user.id not in joined_ids:
                 return False
             emoji_str = str(reaction.emoji)
             if emoji_str not in emoji_buttons:
@@ -625,6 +808,10 @@ class BoozyBank(commands.Cog):
         """
         channel = ctx.channel
 
+        # Check daily limit
+        if not await self._check_and_increment_daily_limit(ctx):
+            return
+
         if rounds < 1 or rounds > 10:
             await ctx.send("❌ Number of rounds must be between 1 and 10.")
             return
@@ -654,8 +841,17 @@ class BoozyBank(commands.Cog):
         self.active_quizzes.add(channel.id)
         self.running_tasks[channel.id] = asyncio.current_task()
 
+        # Run matchmaking lobby
+        joined_players = await self._run_lobby(ctx, topic, difficulty, rounds)
+        if not joined_players:
+            self.active_quizzes.discard(channel.id)
+            self.running_tasks.pop(channel.id, None)
+            return
+
+        joined_ids = {p.id for p in joined_players}
+
         generating_msg = await ctx.send(
-            f"🍻 Preparing a **{rounds}-round** fast-paced game about **{topic}** ({difficulty})...\n"
+            f"🍻 Lobby filled! Preparing a **{rounds}-round** fast-paced game about **{topic}** ({difficulty})...\n"
             f"Fetching all questions in advance for a lightning-fast experience! Please wait..."
         )
 
@@ -728,6 +924,8 @@ class BoozyBank(commands.Cog):
                         return False
                     if m.author.bot:
                         return False
+                    if m.author.id not in joined_ids:
+                        return False
                     ans_attempt = m.content.strip().upper()
                     if ans_attempt not in ["A", "B", "C", "D"]:
                         return False
@@ -739,6 +937,8 @@ class BoozyBank(commands.Cog):
                     if reaction.message.id != round_msg.id:
                         return False
                     if user.bot:
+                        return False
+                    if user.id not in joined_ids:
                         return False
                     emoji_str = str(reaction.emoji)
                     if emoji_str not in emoji_buttons:
@@ -1245,6 +1445,27 @@ class BoozyBank(commands.Cog):
         await self.config.guild(ctx.guild).max_game_payout.set(amount)
         await ctx.send(f"Maximum game payout limit set to `{amount}` coins.")
 
+    @boozyquizset.command()
+    async def dailylimit(self, ctx, amount: int):
+        """Set the maximum daily starts per player (0 to disable)."""
+        if amount < 0:
+            await ctx.send("Limit cannot be negative.")
+            return
+        await self.config.guild(ctx.guild).daily_limit.set(amount)
+        if amount == 0:
+            await ctx.send("Daily starts limit has been **disabled**.")
+        else:
+            await ctx.send(f"Daily starts limit set to `{amount}` per player.")
+
+    @boozyquizset.command()
+    async def minplayers(self, ctx, amount: int):
+        """Set the minimum players required to start a trivia lobby (1 to 10)."""
+        if amount < 1 or amount > 10:
+            await ctx.send("Please choose a player limit between 1 and 10.")
+            return
+        await self.config.guild(ctx.guild).min_players.set(amount)
+        await ctx.send(f"Minimum players required to start matchmaking set to `{amount}`.")
+
     @boozyquizset.group(name="endreward")
     async def _endreward(self, ctx):
         """Configure the end-game rewards based on game difficulty."""
@@ -1330,6 +1551,8 @@ class BoozyBank(commands.Cog):
         hard_end = await config_guild.hard_endreward()
         cleanup = await config_guild.cleanup_messages()
         final_delay = await config_guild.final_cleanup_delay()
+        daily_lim = await config_guild.daily_limit()
+        min_play = await config_guild.min_players()
 
         currency_name = await bank.get_currency_name(ctx.guild)
 
@@ -1347,6 +1570,8 @@ class BoozyBank(commands.Cog):
         emb.add_field(name="🥇 Easy EndReward", value=f"`{easy_end}` {currency_name}", inline=True)
         emb.add_field(name="🥇 Medium EndReward", value=f"`{med_end}` {currency_name}", inline=True)
         emb.add_field(name="🥇 Hard EndReward", value=f"`{hard_end}` {currency_name}", inline=True)
+        emb.add_field(name="📅 Daily limit", value=f"`{daily_lim}` starts" if daily_lim > 0 else "Disabled", inline=True)
+        emb.add_field(name="👥 Min Lobby Players", value=f"`{min_play}` players", inline=True)
         emb.add_field(name="📝 Default Topics", value=f"`{len(topics)}` topics", inline=True)
 
         await ctx.send(embed=emb)
