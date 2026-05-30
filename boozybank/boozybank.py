@@ -55,18 +55,12 @@ class BoozyBank(commands.Cog):
 
     def _get_speed_multiplier(self, elapsed: float) -> tuple:
         """Returns the multiplier and a custom speed tier name based on response speed."""
-        if elapsed <= 2.50:
-            return 1.50, "⚡ Reflex Legend! (Under 2.50s)"
-        elif elapsed <= 3.50:
-            return 1.35, "🚀 Lightning Speed! (Under 3.50s)"
-        elif elapsed <= 4.50:
-            return 1.25, "🔥 Sonic Speed! (Under 4.50s)"
-        elif elapsed <= 5.50:
-            return 1.15, "🏃 Fast! (Under 5.50s)"
-        elif elapsed <= 6.50:
-            return 1.10, "⭐ Quick! (Under 6.50s)"
+        if elapsed <= 2.00:
+            return 1.50, "⚡ Lightning Speed! (Under 2.00s)"
+        elif elapsed <= 5.00:
+            return 1.20, "🚀 Quick Speed! (Under 5.00s)"
         else:
-            return 1.00, "🐢 Standard (Over 6.50s)"
+            return 1.00, "🐢 Standard Speed (Over 5.00s)"
 
     async def _cleanup_round_messages(self, ctx, question_msg, player_msgs):
         """Safely bulk-deletes question embeds and player guesses to keep the channel clean."""
@@ -97,6 +91,17 @@ class BoozyBank(commands.Cog):
                         except discord.HTTPException:
                             pass
             else:
+                pass
+
+    async def _add_reactions_background(self, ctx, message, emojis):
+        """Asynchronously adds emoji buttons in the background so the round starts instantly."""
+        for emoji in emojis:
+            try:
+                await message.add_reaction(emoji)
+            except discord.Forbidden:
+                log.warning(f"Missing 'Add Reactions' permission in guild {ctx.guild.name} (channel: {ctx.channel.name}). Emoji buttons could not be added.")
+                break
+            except discord.HTTPException:
                 pass
 
     async def _generate_quiz(self, guild: discord.Guild, topic: str, difficulty: str) -> dict:
@@ -397,17 +402,10 @@ class BoozyBank(commands.Cog):
 
         question_msg = await ctx.send(embed=emb)
 
-        # Add emoji buttons
+        # Add emoji buttons in the background so the round timer starts instantly!
         emoji_buttons = ["🇦", "🇧", "🇨", "🇩"]
         emoji_to_letter = {"🇦": "A", "🇧": "B", "🇨": "C", "🇩": "D"}
-        for emoji in emoji_buttons:
-            try:
-                await question_msg.add_reaction(emoji)
-            except discord.Forbidden:
-                log.warning(f"Missing 'Add Reactions' permission in guild {ctx.guild.name} (channel: {ctx.channel.name}). Emoji buttons could not be added.")
-                break
-            except discord.HTTPException:
-                pass
+        asyncio.create_task(self._add_reactions_background(ctx, question_msg, emoji_buttons))
 
         answered_users = set()
         player_msgs = []
@@ -692,15 +690,8 @@ class BoozyBank(commands.Cog):
                 
                 round_msg = await ctx.send(embed=emb)
 
-                # Add emoji buttons
-                for emoji in emoji_buttons:
-                    try:
-                        await round_msg.add_reaction(emoji)
-                    except discord.Forbidden:
-                        log.warning(f"Missing 'Add Reactions' permission in guild {ctx.guild.name} (channel: {ctx.channel.name}). Emoji buttons could not be added.")
-                        break
-                    except discord.HTTPException:
-                        pass
+                # Add emoji buttons in the background so the round timer starts instantly!
+                asyncio.create_task(self._add_reactions_background(ctx, round_msg, emoji_buttons))
 
                 answered_users = set()
                 player_msgs = []
