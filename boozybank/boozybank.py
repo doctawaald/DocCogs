@@ -877,12 +877,16 @@ class BoozyBank(commands.Cog):
         allow_second_guess = await self.config.guild(ctx.guild).allow_second_guess()
         show_explanation = await self.config.guild(ctx.guild).show_explanation()
 
-        await ctx.send(
+        start_msg = await ctx.send(
             f"🎉 **BoozyGame Started!** 🎉\n"
             f"**Topic:** {topic} | **Difficulty:** {difficulty.capitalize()} | **Rounds:** {rounds}\n"
             f"Get ready, Round 1 is starting in 3 seconds..."
         )
         await asyncio.sleep(3.0)
+        try:
+            await start_msg.delete()
+        except discord.HTTPException:
+            pass
 
         emoji_buttons = ["🇦", "🇧", "🇨", "🇩"]
         emoji_to_letter = {"🇦": "A", "🇧": "B", "🇨": "C", "🇩": "D"}
@@ -1056,8 +1060,12 @@ class BoozyBank(commands.Cog):
                     self._schedule_final_cleanup(ctx.guild, round_final_msg)
 
                 if index < rounds:
-                    await ctx.send(f"Round {index+1} is starting in 5 seconds...")
+                    next_round_msg = await ctx.send(f"Round {index+1} is starting in 5 seconds...")
                     await asyncio.sleep(5.0)
+                    try:
+                        await next_round_msg.delete()
+                    except discord.HTTPException:
+                        pass
 
         except asyncio.CancelledError:
             self.active_quizzes.discard(channel.id)
@@ -1067,7 +1075,8 @@ class BoozyBank(commands.Cog):
         if not game_scores:
             self.active_quizzes.discard(channel.id)
             self.running_tasks.pop(channel.id, None)
-            await ctx.send("🏁 **Game Over!** Nobody won any rounds, so no coins will be distributed.")
+            game_over_msg = await ctx.send("🏁 **Game Over!** Nobody won any rounds, so no coins will be distributed.")
+            self._schedule_final_cleanup(ctx.guild, game_over_msg)
             return
 
         # Find top score and check for TIE
@@ -1082,23 +1091,37 @@ class BoozyBank(commands.Cog):
 
         if len(grand_winners) > 1:
             champs_mentions = ", ".join(c.mention for c in grand_winners)
-            await ctx.send(
+            tb_start_msg = await ctx.send(
                 f"⚔️ **SUDDEN DEATH TIE-BREAKER!** ⚔️\n"
                 f"We have a tie! {champs_mentions} both finished with **{max_score} points**!\n"
                 f"I will generate tie-breaker questions. **Only** these players can answer! Get ready..."
             )
             await asyncio.sleep(4.0)
+            try:
+                await tb_start_msg.delete()
+            except discord.HTTPException:
+                pass
 
             while len(grand_winners) > 1 and tie_breaker_attempts < max_tie_breakers:
                 tie_breaker_attempts += 1
-                await ctx.send(f"Generating Tie-Breaker Question #{tie_breaker_attempts}...")
+                tb_gen_msg = await ctx.send(f"Generating Tie-Breaker Question #{tie_breaker_attempts}...")
 
                 try:
                     tb_quiz = await self._generate_quiz(ctx.guild, topic, difficulty)
                 except Exception as e:
                     log.error(f"Error generating tie breaker question: {e}")
-                    await ctx.send("❌ Failed to generate tie-breaker. Skipping to final draw.")
+                    try:
+                        await tb_gen_msg.delete()
+                    except discord.HTTPException:
+                        pass
+                    fail_msg = await ctx.send("❌ Failed to generate tie-breaker. Skipping to final draw.")
+                    self._schedule_final_cleanup(ctx.guild, fail_msg)
                     break
+
+                try:
+                    await tb_gen_msg.delete()
+                except discord.HTTPException:
+                    pass
 
                 tb_question = tb_quiz["question"]
                 tb_options = tb_quiz["options"]
@@ -1240,12 +1263,14 @@ class BoozyBank(commands.Cog):
                     self._schedule_final_cleanup(ctx.guild, tb_final)
                     break
                 else:
-                    await ctx.send("❌ Tie-breaker timed out or had no correct answers.")
+                    no_ans_msg = await ctx.send("❌ Tie-breaker timed out or had no correct answers.")
+                    asyncio.create_task(self._delete_message_after(no_ans_msg, 4))
                     if tie_breaker_attempts < max_tie_breakers:
                         await asyncio.sleep(3.0)
 
             if not tie_broken:
-                await ctx.send("🏳️ All tie-breaker attempts failed! We declare a shared draw.")
+                draw_msg = await ctx.send("🏳️ All tie-breaker attempts failed! We declare a shared draw.")
+                self._schedule_final_cleanup(ctx.guild, draw_msg)
 
         self.active_quizzes.discard(channel.id)
         self.running_tasks.pop(channel.id, None)
