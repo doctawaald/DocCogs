@@ -320,7 +320,7 @@ class BoozyBank(commands.Cog):
             "    \"C\": \"Option C content\",\n"
             "    \"D\": \"Option D content\"\n"
             "  },\n"
-            "  \"correct_answer\": \"A\", // MUST be 'A', 'B', 'C', or 'D'\n"
+            "  \"correct_answer\": \"B\", // MUST be the correct key ('A', 'B', 'C', or 'D')\n"
             "  \"explanation\": \"A short, fun explanation of why this answer is correct.\"\n"
             "}"
         )
@@ -328,6 +328,7 @@ class BoozyBank(commands.Cog):
         user_prompt = (
             f"Generate an engaging multiple-choice trivia question in English about the topic '{topic}'.\n"
             f"Difficulty level: {difficulty}.\n"
+            f"Randomize which option letter (A, B, C, or D) holds the correct answer so it is never predictable. "
             f"Ensure all choices are realistic but with only one objectively correct answer."
         )
 
@@ -386,8 +387,22 @@ class BoozyBank(commands.Cog):
                 raise ValueError(f"Missing option '{letter}' in the options.")
             standard_options[letter] = val
 
-        quiz_data["options"] = standard_options
-        quiz_data["correct_answer"] = ans
+        # Randomly shuffle choices in Python so that correct answer is never predictable!
+        correct_text = standard_options[ans]
+        choices = list(standard_options.values())
+        random.shuffle(choices)
+
+        shuffled_options = {}
+        new_ans = None
+        letters = ["A", "B", "C", "D"]
+        for i, val in enumerate(choices):
+            letter = letters[i]
+            shuffled_options[letter] = val
+            if val == correct_text:
+                new_ans = letter
+
+        quiz_data["options"] = shuffled_options
+        quiz_data["correct_answer"] = new_ans
         return quiz_data
 
     async def _generate_quiz_batch(self, guild: discord.Guild, topic: str, difficulty: str, rounds: int) -> list:
@@ -424,7 +439,7 @@ class BoozyBank(commands.Cog):
             "        \"C\": \"Option C content\",\n"
             "        \"D\": \"Option D content\"\n"
             "      },\n"
-            "      \"correct_answer\": \"A\", // MUST be 'A', 'B', 'C', or 'D'\n"
+            "      \"correct_answer\": \"B\", // MUST be the correct key ('A', 'B', 'C', or 'D')\n"
             "      \"explanation\": \"A short, fun explanation of why this answer is correct.\"\n"
             "    }\n"
             "  ]\n"
@@ -434,6 +449,7 @@ class BoozyBank(commands.Cog):
         user_prompt = (
             f"Generate a list of {rounds} unique multiple-choice trivia questions in English about the topic '{topic}'.\n"
             f"Difficulty level: {difficulty}.\n"
+            f"Randomize which option letter (A, B, C, or D) holds the correct answer for each question so it is never predictable. "
             f"Ensure all choices are realistic but with only one objectively correct answer."
         )
 
@@ -496,8 +512,22 @@ class BoozyBank(commands.Cog):
                     raise ValueError(f"Question #{index+1} is missing option '{letter}'.")
                 standard_options[letter] = val
 
-            quiz["options"] = standard_options
-            quiz["correct_answer"] = ans
+            # Randomly shuffle choices in Python so that correct answer is never predictable!
+            correct_text = standard_options[ans]
+            choices = list(standard_options.values())
+            random.shuffle(choices)
+
+            shuffled_options = {}
+            new_ans = None
+            letters = ["A", "B", "C", "D"]
+            for i, val in enumerate(choices):
+                letter = letters[i]
+                shuffled_options[letter] = val
+                if val == correct_text:
+                    new_ans = letter
+
+            quiz["options"] = shuffled_options
+            quiz["correct_answer"] = new_ans
             clean_questions.append(quiz)
 
         return clean_questions
