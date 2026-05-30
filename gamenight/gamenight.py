@@ -379,19 +379,19 @@ class GameNight(commands.Cog):
             if mins > 0:
                 offset_text = f"{hours}h{mins}m"
             else:
-                offset_text = f"{hours} uur"
+                offset_text = f"{hours} hour(s)"
         else:
-            offset_text = f"{offset_minutes} minuten"
+            offset_text = f"{offset_minutes} minutes"
         
         pings = ", ".join(f"<@{uid}>" for uid in missing_uids)
         embed = discord.Embed(
-            title="🔔 Game Night begint bijna!",
+            title="🔔 Game Night is starting soon!",
             description=(
                 f"Hey {pings},\n\n"
-                f"De eerste speler wordt verwacht om **{earliest_str}** — dat is over **{offset_text}**!\n"
-                f"Je hebt je aangemeld maar nog **geen games gekozen**.\n\n"
-                f"Stuur me snel een **DM** met je keuzes:\n"
-                f"Voorbeeld: `!vote Fortnite, Palworld` 🤫"
+                f"The first player is expected at **{earliest_str}** — that's in **{offset_text}**!\n"
+                f"You've RSVP'd but haven't **picked your games** yet.\n\n"
+                f"Send me a **DM** with your choices:\n"
+                f"Example: `!vote Fortnite, Palworld` 🤫"
             ),
             color=discord.Color.orange(),
         )
@@ -739,13 +739,13 @@ class GameNight(commands.Cog):
             await self.config.reminder_delay_hours.set(0)
             if self._reminder_task and not self._reminder_task.done():
                 self._reminder_task.cancel()
-            return await ctx.send("❌ Vaste reminder is nu **uitgeschakeld**.")
+            return await ctx.send("❌ Fixed reminder is now **disabled**.")
         
         hours = 0.0
         
         match = re.match(r'^(\d+(?:\.\d+)?)([hm])$', time_str)
         if not match:
-            return await ctx.send("❌ Ongeldig formaat. Gebruik bijv. `2h`, `30m`, of `0` om uit te schakelen.")
+            return await ctx.send("❌ Invalid format. Use e.g. `2h`, `30m`, or `0` to disable.")
             
         val, unit = match.groups()
         val = float(val)
@@ -756,7 +756,7 @@ class GameNight(commands.Cog):
             hours = val / 60.0
             
         await self.config.reminder_delay_hours.set(hours)
-        await ctx.send(f"⏱️ Vaste reminder ingesteld op **{time_str}** na `!gn open`.")
+        await ctx.send(f"⏱️ Fixed reminder set to **{time_str}** after `!gn open`.")
     @gamenight.command(name="smartreminder")
     @commands.admin_or_permissions(administrator=True)
     async def gn_smartreminder(self, ctx, *, args: str = None):
@@ -773,7 +773,7 @@ class GameNight(commands.Cog):
             # Show current settings
             enabled = await self.config.smart_reminder_enabled()
             offset = await self.config.smart_reminder_offset_minutes()
-            status = "✅ AAN" if enabled else "❌ UIT"
+            status = "✅ ON" if enabled else "❌ OFF"
             
             if offset >= 60:
                 hours = offset // 60
@@ -785,9 +785,9 @@ class GameNight(commands.Cog):
             await ctx.send(
                 f"🔔 **Smart Reminder**\n"
                 f"Status: {status}\n"
-                f"Offset: **{offset_str}** voor de vroegste RSVP-tijd\n\n"
-                f"Gebruik `!gn smartreminder 1h` om de offset in te stellen,\n"
-                f"`!gn smartreminder on/off` om aan/uit te zetten."
+                f"Offset: **{offset_str}** before the earliest RSVP time\n\n"
+                f"Use `!gn smartreminder 1h` to set the offset,\n"
+                f"`!gn smartreminder on/off` to enable/disable."
             )
             return
         
@@ -795,19 +795,19 @@ class GameNight(commands.Cog):
         
         if args == "on":
             await self.config.smart_reminder_enabled.set(True)
-            return await ctx.send("✅ Smart Reminder is nu **AAN**.")
+            return await ctx.send("✅ Smart Reminder is now **ON**.")
         
         if args == "off":
             await self.config.smart_reminder_enabled.set(False)
             # Cancel running smart reminder
             if self._smart_reminder_task and not self._smart_reminder_task.done():
                 self._smart_reminder_task.cancel()
-            return await ctx.send("❌ Smart Reminder is nu **UIT**.")
+            return await ctx.send("❌ Smart Reminder is now **OFF**.")
         
         # Parse time offset
         match = re.match(r'^(\d+(?:\.\d+)?)([hm])$', args)
         if not match:
-            return await ctx.send("❌ Ongeldig formaat. Gebruik bijv. `1h`, `30m`, `on` of `off`.")
+            return await ctx.send("❌ Invalid format. Use e.g. `1h`, `30m`, `on` or `off`.")
         
         val, unit = match.groups()
         val = float(val)
@@ -818,7 +818,7 @@ class GameNight(commands.Cog):
             minutes = int(val)
         
         if minutes < 1:
-            return await ctx.send("❌ De offset moet minimaal 1 minuut zijn.")
+            return await ctx.send("❌ The offset must be at least 1 minute.")
         
         await self.config.smart_reminder_offset_minutes.set(minutes)
         
@@ -829,7 +829,7 @@ class GameNight(commands.Cog):
         else:
             display = f"{minutes}m"
         
-        await ctx.send(f"🔔 Smart Reminder offset ingesteld op **{display}** voor de vroegste RSVP-tijd.")
+        await ctx.send(f"🔔 Smart Reminder offset set to **{display}** before the earliest RSVP time.")
         
         # Reschedule if a session is currently open
         if self.is_open:
