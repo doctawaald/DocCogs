@@ -28,6 +28,7 @@ class BoozyBank(commands.Cog):
             "medium_endreward": 200,
             "hard_endreward": 400,
             "cleanup_messages": True,
+            "final_cleanup_delay": 5, # default 5 minutes, 0 to disable
             "default_topics": [
                 "Beer & Breweries",
                 "Classic Cocktails",
@@ -104,14 +105,31 @@ class BoozyBank(commands.Cog):
             except discord.HTTPException:
                 pass
 
+    def _schedule_final_cleanup(self, guild: discord.Guild, message: discord.Message):
+        """Schedules a non-blocking background task to delete a final result embed after the configured delay."""
+        async def do_cleanup():
+            try:
+                delay_minutes = await self.config.guild(guild).final_cleanup_delay()
+                if delay_minutes <= 0:
+                    return
+                await asyncio.sleep(delay_minutes * 60)
+                await message.delete()
+            except discord.HTTPException:
+                pass # Already deleted or missing permissions
+            except Exception as e:
+                log.error(f"Error during final cleanup: {e}")
+
+        if message:
+            asyncio.create_task(do_cleanup())
+
     async def _generate_quiz(self, guild: discord.Guild, topic: str, difficulty: str) -> dict:
         """Fetches a single quiz question from OpenAI via a non-blocking request."""
         tokens = await self.bot.get_shared_api_tokens("openai")
         api_key = tokens.get("api_key")
         if not api_key:
             raise ValueError(
-                "The OpenAI API key has not been configured yet!\n"
-                "Use the command `[p]set api openai api_key,<api_key>` to set it."
+                "De OpenAI API-key is nog niet ingesteld!\n"
+                "Gebruik het commando `[p]set api openai api_key,<api_key>` om deze in te stellen."
             )
 
         model = await self.config.guild(guild).model()
@@ -566,7 +584,9 @@ class BoozyBank(commands.Cog):
 
             avatar_url = winner.display_avatar.url if hasattr(winner, "display_avatar") else winner.avatar_url
             winner_emb.set_thumbnail(url=avatar_url)
-            await ctx.send(embed=winner_emb)
+            
+            final_msg = await ctx.send(embed=winner_emb)
+            self._schedule_final_cleanup(ctx.guild, final_msg)
 
         else:
             timeout_emb = discord.Embed(
@@ -585,7 +605,8 @@ class BoozyBank(commands.Cog):
                     inline=False
                 )
 
-            await ctx.send(embed=timeout_emb)
+            final_msg = await ctx.send(embed=timeout_emb)
+            self._schedule_final_cleanup(ctx.guild, final_msg)
 
     @commands.command()
     @commands.guild_only()
@@ -650,7 +671,10 @@ class BoozyBank(commands.Cog):
 
         await generating_msg.delete()
 
-        game_scores = {}
+        game_scores = {} # Scoreboard points: {Member: total_points}
+        game_wins = {} # Scoreboard rounds won: {Member: correct_answers_count}
+        game_speeds = {} # Speed tracking: {Member: [speeds_list]}
+        game_multipliers = {} # Multiplier tracking: {Member: [multipliers_list]}
         currency_name = await bank.get_currency_name(ctx.guild)
         
         timeout = await self.config.guild(ctx.guild).timeout()
@@ -796,7 +820,13 @@ class BoozyBank(commands.Cog):
 
                 if winner:
                     multiplier, speed_tier = self._get_speed_multiplier(elapsed)
-                    game_scores[winner] = game_scores.get(winner, 0) + 1
+                    points_earned = int(100 * multiplier)
+                    
+                    # Track score and stats
+                    game_scores[winner] = game_scores.get(winner, 0) + points_earned
+                    game_wins[winner] = game_wins.get(winner, 0) + 1
+                    game_speeds.setdefault(winner, []).append(elapsed)
+                    game_multipliers.setdefault(winner, []).append(multiplier)
 
                     round_win_emb = discord.Embed(
                         title=f"🎯 Round {index} Won!",
@@ -804,12 +834,14 @@ class BoozyBank(commands.Cog):
                         description=f"{winner.mention} got it right! Answer was **{correct_answer}** ({options[correct_answer]})\n\n"
                                     f"⏱️ **Speed:** `{elapsed:.2f}` seconds\n"
                                     f"⚡ **Speed Rank:** {speed_tier}\n"
+                                    f"🎯 **Points Awarded:** `+{points_earned}` points *(Base: 100 x {multiplier:.2f}x)*\n"
                                     f"📊 *Score updated! Check the leaderboard at the end.*"
                     )
                     if show_explanation and explanation:
                         round_win_emb.add_field(name="ℹ️ Explanation", value=explanation, inline=False)
                     
-                    await ctx.send(embed=round_win_emb)
+                    round_final_msg = await ctx.send(embed=round_win_emb)
+                    self._schedule_final_cleanup(ctx.guild, round_final_msg)
                 else:
                     round_timeout_emb = discord.Embed(
                         title=f"⏰ Round {index} - Time is up!",
@@ -820,7 +852,8 @@ class BoozyBank(commands.Cog):
                     if show_explanation and explanation:
                         round_timeout_emb.add_field(name="ℹ️ Explanation", value=explanation, inline=False)
                     
-                    await ctx.send(embed=round_timeout_emb)
+                    round_final_msg = await ctx.send(embed=round_timeout_emb)
+                    self._schedule_final_cleanup(ctx.guild, round_final_msg)
 
                 if index < rounds:
                     await ctx.send(f"Round {index+1} is starting in 5 seconds...")
@@ -831,35 +864,223 @@ class BoozyBank(commands.Cog):
             self.running_tasks.pop(channel.id, None)
             raise
 
-        self.active_quizzes.discard(channel.id)
-        self.running_tasks.pop(channel.id, None)
-
         if not game_scores:
+            self.active_quizzes.discard(channel.id)
+            self.running_tasks.pop(channel.id, None)
             await ctx.send("🏁 **Game Over!** Nobody won any rounds, so no coins will be distributed.")
             return
 
+        # Find top score and check for TIE
         sorted_scores = sorted(game_scores.items(), key=lambda x: x[1], reverse=True)
         max_score = sorted_scores[0][1]
-        
-        # Calculate overall champions
         grand_winners = [member for member, score in sorted_scores if score == max_score]
 
-        # Determine difficulty-scaled end reward
+        # ⚔️ SUDDEN DEATH TIE-BREAKER ⚔️
+        tie_broken = False
+        tie_breaker_attempts = 0
+        max_tie_breakers = 3
+
+        if len(grand_winners) > 1:
+            champs_mentions = ", ".join(c.mention for c in grand_winners)
+            await ctx.send(
+                f"⚔️ **SUDDEN DEATH TIE-BREAKER!** ⚔️\n"
+                f"We have a tie! {champs_mentions} both finished with **{max_score} points**!\n"
+                f"I will generate tie-breaker questions. **Only** these players can answer! Get ready..."
+            )
+            await asyncio.sleep(4.0)
+
+            while len(grand_winners) > 1 and tie_breaker_attempts < max_tie_breakers:
+                tie_breaker_attempts += 1
+                await ctx.send(f"Generating Tie-Breaker Question #{tie_breaker_attempts}...")
+
+                try:
+                    tb_quiz = await self._generate_quiz(ctx.guild, topic, difficulty)
+                except Exception as e:
+                    log.error(f"Error generating tie breaker question: {e}")
+                    await ctx.send("❌ Failed to generate tie-breaker. Skipping to final draw.")
+                    break
+
+                tb_question = tb_quiz["question"]
+                tb_options = tb_quiz["options"]
+                tb_correct = tb_quiz["correct_answer"]
+                tb_explanation = tb_quiz["explanation"]
+
+                tb_choices = ""
+                for letter, opt in tb_options.items():
+                    tb_choices += f"**{letter}**: {opt}\n"
+
+                tb_emb = discord.Embed(
+                    title=f"⚔️ Tie-Breaker Round {tie_breaker_attempts} ⚔️",
+                    color=discord.Color.red(),
+                    description=f"**ONLY TIE CONTENDERS CAN ANSWER!**\n\n"
+                                f"**QUESTION:**\n{tb_question}\n\n**CHOICES:**\n{tb_choices}"
+                )
+                tb_emb.set_footer(text=f"Tied players: Tap a button or type A, B, C, D! | Time: {timeout}s")
+
+                tb_msg = await ctx.send(embed=tb_emb)
+                asyncio.create_task(self._add_reactions_background(ctx, tb_msg, emoji_buttons))
+
+                answered_users = set()
+                tb_player_msgs = []
+                tb_start = time.time()
+                tb_winner = None
+                tb_elapsed = 0.0
+
+                def check_tb_msg(m):
+                    if m.channel.id != ctx.channel.id:
+                        return False
+                    if m.author not in grand_winners:
+                        return False
+                    ans_attempt = m.content.strip().upper()
+                    if ans_attempt not in ["A", "B", "C", "D"]:
+                        return False
+                    if not allow_second_guess and m.author.id in answered_users:
+                        return False
+                    return True
+
+                def check_tb_rxn(reaction, user):
+                    if reaction.message.id != tb_msg.id:
+                        return False
+                    if user not in grand_winners:
+                        return False
+                    emoji_str = str(reaction.emoji)
+                    if emoji_str not in emoji_buttons:
+                        return False
+                    if not allow_second_guess and user.id in answered_users:
+                        return False
+                    return True
+
+                while time.time() - tb_start < timeout:
+                    rem = timeout - (time.time() - tb_start)
+                    if rem <= 0:
+                        break
+
+                    m_task = asyncio.create_task(self.bot.wait_for("message", check=check_tb_msg, timeout=rem))
+                    r_task = asyncio.create_task(self.bot.wait_for("reaction_add", check=check_tb_rxn, timeout=rem))
+
+                    d, p = await asyncio.wait([m_task, r_task], return_when=asyncio.FIRST_COMPLETED, timeout=rem)
+                    for pending_t in p:
+                        pending_t.cancel()
+
+                    ans_user = None
+                    ans_val = None
+                    trig_m = None
+                    trig_r = None
+
+                    for comp in d:
+                        try:
+                            res = comp.result()
+                            if isinstance(res, discord.Message):
+                                trig_m = res
+                                ans_user = res.author
+                                ans_val = res.content.strip().upper()
+                                tb_player_msgs.append(res)
+                            else:
+                                rxn, u = res
+                                trig_r = rxn
+                                ans_user = u
+                                ans_val = emoji_to_letter[str(rxn.emoji)]
+                        except Exception:
+                            pass
+
+                    if not ans_user or not ans_val:
+                        break
+
+                    answered_users.add(ans_user.id)
+
+                    if ans_val == tb_correct:
+                        tb_winner = ans_user
+                        tb_elapsed = time.time() - tb_start
+                        if trig_m:
+                            try:
+                                await trig_m.add_reaction("✅")
+                            except discord.HTTPException:
+                                pass
+                        break
+                    else:
+                        if trig_m:
+                            try:
+                                await trig_m.add_reaction("❌")
+                            except discord.HTTPException:
+                                pass
+                        elif trig_r:
+                            perm = ctx.channel.permissions_for(ctx.me)
+                            if perm.manage_messages:
+                                try:
+                                    await tb_msg.remove_reaction(trig_r.emoji, ans_user)
+                                except discord.HTTPException:
+                                    pass
+
+                # Cleanup tie-breaker messages
+                await self._cleanup_round_messages(ctx, tb_msg, tb_player_msgs)
+
+                if tb_winner:
+                    grand_winners = [tb_winner] # Tie successfully broken!
+                    tie_broken = True
+                    
+                    # Log final tie win stats
+                    multiplier, speed_tier = self._get_speed_multiplier(tb_elapsed)
+                    points_earned = int(100 * multiplier)
+                    game_scores[tb_winner] = game_scores.get(tb_winner, 0) + points_earned
+                    game_wins[tb_winner] = game_wins.get(tb_winner, 0) + 1
+                    game_speeds.setdefault(tb_winner, []).append(tb_elapsed)
+                    game_multipliers.setdefault(tb_winner, []).append(multiplier)
+
+                    tb_win_emb = discord.Embed(
+                        title="🎯 Tie-Breaker Solved!",
+                        color=discord.Color.green(),
+                        description=f"{tb_winner.mention} answered correctly and broke the tie! Answer was **{tb_correct}** ({tb_options[tb_correct]})\n\n"
+                                    f"⏱️ **Speed:** `{tb_elapsed:.2f}` seconds (Multiplier: {multiplier}x)\n"
+                                    f"👑 Crowned overall Champion!"
+                    )
+                    if show_explanation and tb_explanation:
+                        tb_win_emb.add_field(name="ℹ️ Explanation", value=tb_explanation, inline=False)
+                    
+                    tb_final = await ctx.send(embed=tb_win_emb)
+                    self._schedule_final_cleanup(ctx.guild, tb_final)
+                    break
+                else:
+                    await ctx.send("❌ Tie-breaker timed out or had no correct answers.")
+                    if tie_breaker_attempts < max_tie_breakers:
+                        await asyncio.sleep(3.0)
+
+            if not tie_broken:
+                await ctx.send("🏳️ All tie-breaker attempts failed! We declare a shared draw.")
+
+        self.active_quizzes.discard(channel.id)
+        self.running_tasks.pop(channel.id, None)
+
+        # Final end reward distribution
         end_reward_key = f"{difficulty}_endreward"
-        end_reward = await self.config.guild(ctx.guild).get_attr(end_reward_key)()
+        base_end_reward = await self.config.guild(ctx.guild).get_attr(end_reward_key)()
+
+        payout_results = {}
+        champions_list = grand_winners # Can be multiple if draw occurred
+
+        # Calculate flat payouts for the champions (divided equally for draws)
+        payouts_by_winner = {}
+        total_payout_requested = 0
+        num_champs = len(champions_list)
+
+        for champ in champions_list:
+            final_payout = int(base_end_reward / num_champs)
+            payouts_by_winner[champ] = final_payout
+            total_payout_requested += final_payout
 
         # Safety Cap
         max_game_payout = await self.config.guild(ctx.guild).max_game_payout()
-        payout_per_winner = end_reward
-        
-        total_payout_requested = len(grand_winners) * end_reward
+        scaling_factor = 1.0
         if total_payout_requested > max_game_payout:
-            payout_per_winner = int(max_game_payout / len(grand_winners))
+            scaling_factor = max_game_payout / total_payout_requested
 
-        # Distribute payouts to champions
-        for champ in grand_winners:
+        # Distribute coins and save to database
+        for champ in champions_list:
+            unscaled_payout = payouts_by_winner[champ]
+            final_coins = int(unscaled_payout * scaling_factor)
+            payout_results[champ] = final_coins
+
             try:
-                await bank.deposit_credits(champ, payout_per_winner)
+                await bank.deposit_credits(champ, final_coins)
             except bank.errors.BalanceTooHigh:
                 pass
 
@@ -868,52 +1089,70 @@ class BoozyBank(commands.Cog):
             current_wins = await self.config.member(player).wins()
             current_earnings = await self.config.member(player).earnings()
             
-            winnings_won = payout_per_winner if player in grand_winners else 0
-            await self.config.member(player).wins.set(current_wins + score)
+            winnings_won = payout_results.get(player, 0)
+            rounds_won_count = game_wins.get(player, 0)
+            await self.config.member(player).wins.set(current_wins + rounds_won_count)
             await self.config.member(player).earnings.set(current_earnings + winnings_won)
 
-        # Final podium embed
+        # Re-sort final scores for podium
+        final_scores = sorted(game_scores.items(), key=lambda x: x[1], reverse=True)
+
+        # Final embed
         podium_emb = discord.Embed(
             title="🏁 Trivia Game Over! Final Scores 🏁",
             color=discord.Color.gold(),
             description=f"**Topic:** {topic} | **Difficulty:** {difficulty.capitalize()}\n"
-                        f"Overall winner(s) receive the difficulty-scaled End Game Reward! Here are the scores:\n\n"
+                        f"Overall match winners receive the End Game Reward:\n\n"
         )
 
         podium_text = ""
-        for rank, (player, score) in enumerate(sorted_scores, start=1):
+        for rank, (player, score) in enumerate(final_scores, start=1):
             medal = "🥇 " if rank == 1 else "🥈 " if rank == 2 else "🥉 " if rank == 3 else f"#{rank} "
-            winnings_won = payout_per_winner if player in grand_winners else 0
             
-            champ_badge = "👑 **CHAMPION** " if player in grand_winners else ""
-            podium_text += f"{medal}{champ_badge}**{player.display_name}** - `{score}` points | Won `{winnings_won}` {currency_name}\n"
+            is_champ = player in champions_list
+            champ_badge = "👑 **CHAMPION** " if is_champ else ""
+            
+            winnings = payout_results.get(player, 0)
+            
+            player_speeds = game_speeds.get(player, [])
+            if player_speeds:
+                avg_speed = sum(player_speeds) / len(player_speeds)
+                multipliers = game_multipliers.get(player, [1.0])
+                mults_str = ", ".join(f"{m:.2f}x" for m in multipliers)
+                speed_str = f"Avg. Speed: `{avg_speed:.2f}s` | Round Multipliers: `{mults_str}`"
+            else:
+                speed_str = "No rounds won"
+                
+            podium_text += f"{medal}{champ_badge}**{player.display_name}** - `{score}` points\n" \
+                           f"   ↳ *{speed_str}* | Won `{winnings}` {currency_name}\n"
 
         podium_emb.description = f"{podium_emb.description}{podium_text}"
 
-        if total_payout_requested > max_game_payout:
+        if scaling_factor < 1.0:
             podium_emb.add_field(
                 name="⚖️ Economy Hard-Limit Applied",
-                value=f"The total game payout reached `{total_payout_requested}` {currency_name}, which exceeded the guild cap of `{max_game_payout}`. Payouts were scaled down to `{payout_per_winner}` per champion.",
+                value=f"The total game payout reached `{total_payout_requested}` {currency_name}, which exceeded the guild cap of `{max_game_payout}`. Payouts were scaled down by `{scaling_factor:.2%}`.",
                 inline=False
             )
             
-        if len(grand_winners) == 1:
-            champion = grand_winners[0]
+        if len(champions_list) == 1:
+            champion = champions_list[0]
             podium_emb.set_thumbnail(url=champion.display_avatar.url if hasattr(champion, "display_avatar") else champion.avatar_url)
             podium_emb.add_field(
                 name="🏆 Overall Grand Winner!",
-                value=f"{champion.mention} receives the {difficulty.capitalize()} End Game Reward of `{payout_per_winner}` {currency_name} for scoring the highest!",
+                value=f"{champion.mention} receives the End Game Reward of **`{payout_results[champion]}` {currency_name}**!",
                 inline=False
             )
         else:
-            champs_mention = ", ".join(c.mention for c in grand_winners)
+            champs_mention = ", ".join(c.mention for c in champions_list)
             podium_emb.add_field(
                 name="🏆 Overall Grand Winners (Tie!)",
-                value=f"It's a tie! {champs_mention} each receive `{payout_per_winner}` {currency_name} End Game Reward!",
+                value=f"It's a tie! {champs_mention} each receive a split of the End Game Reward: **`{base_end_reward // len(champions_list)}` {currency_name}**!",
                 inline=False
             )
 
-        await ctx.send(embed=podium_emb)
+        podium_msg = await ctx.send(embed=podium_emb)
+        self._schedule_final_cleanup(ctx.guild, podium_msg)
 
     @commands.command()
     @commands.guild_only()
@@ -984,6 +1223,18 @@ class BoozyBank(commands.Cog):
         await self.config.guild(ctx.guild).cleanup_messages.set(toggle)
         status = "enabled" if toggle else "disabled"
         await ctx.send(f"Message cleanup is now **{status}**.")
+
+    @boozyquizset.command()
+    async def finalcleanup(self, ctx, minutes: int):
+        """Set the delay in minutes to delete final quiz embeds (0 to disable)."""
+        if minutes < 0:
+            await ctx.send("Delay cannot be negative.")
+            return
+        await self.config.guild(ctx.guild).final_cleanup_delay.set(minutes)
+        if minutes == 0:
+            await ctx.send("Final message cleanup has been **disabled**.")
+        else:
+            await ctx.send(f"Final message cleanup set to **{minutes}** minutes.")
 
     @boozyquizset.command()
     async def maxpayout(self, ctx, amount: int):
@@ -1078,6 +1329,7 @@ class BoozyBank(commands.Cog):
         med_end = await config_guild.medium_endreward()
         hard_end = await config_guild.hard_endreward()
         cleanup = await config_guild.cleanup_messages()
+        final_delay = await config_guild.final_cleanup_delay()
 
         currency_name = await bank.get_currency_name(ctx.guild)
 
@@ -1090,6 +1342,7 @@ class BoozyBank(commands.Cog):
         emb.add_field(name="🧠 OpenAI Model", value=f"`{model}`", inline=True)
         emb.add_field(name="🔄 Second Guess?", value="Allowed" if second_guess else "Not allowed", inline=True)
         emb.add_field(name="🧹 Message Cleanup?", value="Enabled" if cleanup else "Disabled", inline=True)
+        emb.add_field(name="🧹 Final Cleanup Delay", value="Disabled" if final_delay == 0 else f"{final_delay} minutes", inline=True)
         emb.add_field(name="⚖️ Max Game Payout", value=f"`{max_payout}` {currency_name}", inline=True)
         emb.add_field(name="🥇 Easy EndReward", value=f"`{easy_end}` {currency_name}", inline=True)
         emb.add_field(name="🥇 Medium EndReward", value=f"`{med_end}` {currency_name}", inline=True)
