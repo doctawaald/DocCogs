@@ -7,12 +7,16 @@ import aiohttp
 import discord
 from redbot.core import Config, commands, bank
 from redbot.core.utils.chat_formatting import box
+
 log = logging.getLogger("red.boozybank")
+
 class BoozyBank(commands.Cog):
     """AI-Powered Trivia Game that deposits coins in the Redbot bank."""
+
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=892347891234, force_registration=True)
+
         default_guild = {
             "easy_reward": 50,
             "medium_reward": 100,
@@ -35,28 +39,33 @@ class BoozyBank(commands.Cog):
                 "Geography & Landmarks"
             ]
         }
+
         default_member = {
             "wins": 0,
             "earnings": 0
         }
+
         self.config.register_guild(**default_guild)
         self.config.register_member(**default_member)
+
         # Active channel quizzes lock
         self.active_quizzes = set()
+
     def _get_speed_multiplier(self, elapsed: float) -> tuple:
         """Returns the multiplier and a custom speed tier name based on response speed."""
-        if elapsed <= 0.50:
-            return 1.50, "⚡ Reflex Legend! (Under 0.50s)"
-        elif elapsed <= 0.75:
-            return 1.35, "🚀 Lightning Speed! (Under 0.75s)"
-        elif elapsed <= 1.00:
-            return 1.25, "🔥 Sonic Speed! (Under 1.00s)"
-        elif elapsed <= 1.25:
-            return 1.15, "🏃 Fast! (Under 1.25s)"
-        elif elapsed <= 1.50:
-            return 1.10, "⭐ Quick! (Under 1.50s)"
+        if elapsed <= 2.50:
+            return 1.50, "⚡ Reflex Legend! (Under 2.50s)"
+        elif elapsed <= 3.50:
+            return 1.35, "🚀 Lightning Speed! (Under 3.50s)"
+        elif elapsed <= 4.50:
+            return 1.25, "🔥 Sonic Speed! (Under 4.50s)"
+        elif elapsed <= 5.50:
+            return 1.15, "🏃 Fast! (Under 5.50s)"
+        elif elapsed <= 6.50:
+            return 1.10, "⭐ Quick! (Under 6.50s)"
         else:
-            return 1.00, "🐢 Standard (Over 1.50s)"
+            return 1.00, "🐢 Standard (Over 6.50s)"
+
     async def _generate_quiz(self, guild: discord.Guild, topic: str, difficulty: str) -> dict:
         """Fetches a single quiz question from OpenAI via a non-blocking request."""
         tokens = await self.bot.get_shared_api_tokens("openai")
@@ -66,12 +75,15 @@ class BoozyBank(commands.Cog):
                 "The OpenAI API key has not been configured yet!\n"
                 "Use the command `[p]set api openai api_key,<api_key>` to set it."
             )
+
         model = await self.config.guild(guild).model()
+
         url = "https://api.openai.com/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
+
         system_prompt = (
             "You are a professional trivia and quiz generator.\n"
             "Your task is to generate a single, highly engaging, accurate multiple-choice question.\n"
@@ -90,11 +102,13 @@ class BoozyBank(commands.Cog):
             "  \"explanation\": \"A short, fun explanation of why this answer is correct.\"\n"
             "}"
         )
+
         user_prompt = (
             f"Generate an engaging multiple-choice trivia question in English about the topic '{topic}'.\n"
             f"Difficulty level: {difficulty}.\n"
             f"Ensure all choices are realistic but with only one objectively correct answer."
         )
+
         payload = {
             "model": model,
             "messages": [
@@ -104,6 +118,7 @@ class BoozyBank(commands.Cog):
             "response_format": {"type": "json_object"},
             "temperature": 0.8
         }
+
         session = getattr(self.bot, "session", None)
         if session is None or session.closed:
             async with aiohttp.ClientSession() as temp_session:
@@ -118,21 +133,26 @@ class BoozyBank(commands.Cog):
                     text = await response.text()
                     raise RuntimeError(f"OpenAI API returned status {response.status}: {text}")
                 data = await response.json()
+
         try:
             content = data["choices"][0]["message"]["content"]
             quiz_data = json.loads(content)
         except (KeyError, IndexError, json.JSONDecodeError) as e:
             raise RuntimeError(f"Could not parse the OpenAI response. Error: {e}")
+
         # Validate quiz data structure
         required_keys = ["question", "options", "correct_answer", "explanation"]
         for key in required_keys:
             if key not in quiz_data:
                 raise KeyError(f"Missing key '{key}' in OpenAI response.")
+
         if not isinstance(quiz_data["options"], dict) or len(quiz_data["options"]) != 4:
             raise ValueError("Options must be a dictionary with exactly 4 choices (A, B, C, D).")
+
         ans = quiz_data["correct_answer"].strip().upper()
         if ans not in ["A", "B", "C", "D"]:
             raise ValueError(f"Correct answer '{ans}' is not A, B, C, or D.")
+
         standard_options = {}
         for letter in ["A", "B", "C", "D"]:
             val = None
@@ -143,9 +163,11 @@ class BoozyBank(commands.Cog):
             if val is None:
                 raise ValueError(f"Missing option '{letter}' in the options.")
             standard_options[letter] = val
+
         quiz_data["options"] = standard_options
         quiz_data["correct_answer"] = ans
         return quiz_data
+
     async def _generate_quiz_batch(self, guild: discord.Guild, topic: str, difficulty: str, rounds: int) -> list:
         """Fetches a batch of quiz questions from OpenAI in a single JSON API call."""
         tokens = await self.bot.get_shared_api_tokens("openai")
@@ -155,12 +177,15 @@ class BoozyBank(commands.Cog):
                 "The OpenAI API key has not been configured yet!\n"
                 "Use the command `[p]set api openai api_key,<api_key>` to set it."
             )
+
         model = await self.config.guild(guild).model()
+
         url = "https://api.openai.com/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
+
         system_prompt = (
             "You are a professional trivia and quiz generator.\n"
             "Your task is to generate a list of highly engaging, accurate multiple-choice questions.\n"
@@ -183,11 +208,13 @@ class BoozyBank(commands.Cog):
             "  ]\n"
             "}"
         )
+
         user_prompt = (
             f"Generate a list of {rounds} unique multiple-choice trivia questions in English about the topic '{topic}'.\n"
             f"Difficulty level: {difficulty}.\n"
             f"Ensure all choices are realistic but with only one objectively correct answer."
         )
+
         payload = {
             "model": model,
             "messages": [
@@ -197,6 +224,7 @@ class BoozyBank(commands.Cog):
             "response_format": {"type": "json_object"},
             "temperature": 0.8
         }
+
         session = getattr(self.bot, "session", None)
         if session is None or session.closed:
             async with aiohttp.ClientSession() as temp_session:
@@ -211,24 +239,30 @@ class BoozyBank(commands.Cog):
                     text = await response.text()
                     raise RuntimeError(f"OpenAI API returned status {response.status}: {text}")
                 data = await response.json()
+
         try:
             content = data["choices"][0]["message"]["content"]
             batch_data = json.loads(content)
         except (KeyError, IndexError, json.JSONDecodeError) as e:
             raise RuntimeError(f"Could not parse the OpenAI response. Error: {e}")
+
         if "questions" not in batch_data or not isinstance(batch_data["questions"], list):
             raise KeyError("Missing or invalid 'questions' array in OpenAI response.")
+
         clean_questions = []
         for index, quiz in enumerate(batch_data["questions"]):
             required_keys = ["question", "options", "correct_answer", "explanation"]
             for key in required_keys:
                 if key not in quiz:
                     raise KeyError(f"Question #{index+1} is missing key '{key}'.")
+
             if not isinstance(quiz["options"], dict) or len(quiz["options"]) != 4:
                 raise ValueError(f"Question #{index+1} options are not exactly 4 choices (A, B, C, D).")
+
             ans = quiz["correct_answer"].strip().upper()
             if ans not in ["A", "B", "C", "D"]:
                 raise ValueError(f"Question #{index+1} correct answer '{ans}' is not A, B, C, or D.")
+
             standard_options = {}
             for letter in ["A", "B", "C", "D"]:
                 val = None
@@ -239,17 +273,22 @@ class BoozyBank(commands.Cog):
                 if val is None:
                     raise ValueError(f"Question #{index+1} is missing option '{letter}'.")
                 standard_options[letter] = val
+
             quiz["options"] = standard_options
             quiz["correct_answer"] = ans
             clean_questions.append(quiz)
+
         return clean_questions
+
     @commands.command()
     @commands.guild_only()
     async def boozyquiz(self, ctx, *, topic_and_difficulty: str = None):
         """Start a single AI-generated multiple-choice quiz.
+
         You can optionally specify a topic and/or difficulty.
         If no topic is specified, a random default topic is chosen.
         Difficulties: easy, medium, hard (default is medium).
+
         Examples:
         `[p]boozyquiz`
         `[p]boozyquiz cocktails`
@@ -257,11 +296,14 @@ class BoozyBank(commands.Cog):
         `[p]boozyquiz Video Games easy`
         """
         channel = ctx.channel
+
         if channel.id in self.active_quizzes:
             await ctx.send("🍻 A quiz is already active in this channel! Solve that one first.")
             return
+
         topic = None
         difficulty = "medium"
+
         if topic_and_difficulty:
             words = topic_and_difficulty.strip().split()
             if len(words) > 1 and words[-1].lower() in ["easy", "medium", "hard"]:
@@ -271,14 +313,18 @@ class BoozyBank(commands.Cog):
                 difficulty = words[0].lower()
             else:
                 topic = topic_and_difficulty.strip()
+
         if not topic:
             default_topics = await self.config.guild(ctx.guild).default_topics()
             topic = random.choice(default_topics) if default_topics else "General Knowledge"
+
         self.active_quizzes.add(channel.id)
+
         emoji_beer = "🍻"
         generating_msg = await ctx.send(
             f"{emoji_beer} Generating an **{difficulty}** quiz question about **{topic}** via OpenAI... Please wait!"
         )
+
         try:
             quiz_data = await self._generate_quiz(ctx.guild, topic, difficulty)
         except Exception as e:
@@ -287,14 +333,18 @@ class BoozyBank(commands.Cog):
             log.error(f"Error generating quiz: {e}", exc_info=True)
             await ctx.send(f"❌ An error occurred while retrieving the quiz:\n{e}")
             return
+
         await generating_msg.delete()
+
         question = quiz_data["question"]
         options = quiz_data["options"]
         correct_answer = quiz_data["correct_answer"]
         explanation = quiz_data["explanation"]
+
         choices_str = ""
         for letter, opt in options.items():
             choices_str += f"**{letter}**: {opt}\n"
+
         emb = discord.Embed(
             title=f"🍻 BoozyBank Trivia! 🍻",
             color=discord.Color.gold(),
@@ -302,15 +352,20 @@ class BoozyBank(commands.Cog):
                         f"**QUESTION:**\n{question}\n\n"
                         f"**CHOICES:**\n{choices_str}"
         )
+
         timeout = await self.config.guild(ctx.guild).timeout()
         allow_second_guess = await self.config.guild(ctx.guild).allow_second_guess()
         currency_name = await bank.get_currency_name(ctx.guild)
+
         emb.set_footer(text=f"Type A, B, C, or D to answer! | Time limit: {timeout}s")
+
         await ctx.send(embed=emb)
+
         answered_users = set()
         start_time = time.time()
         winner = None
         elapsed = 0.0
+
         def check(m):
             if m.channel.id != ctx.channel.id:
                 return False
@@ -322,6 +377,7 @@ class BoozyBank(commands.Cog):
             if not allow_second_guess and m.author.id in answered_users:
                 return False
             return True
+
         while time.time() - start_time < timeout:
             remaining = timeout - (time.time() - start_time)
             if remaining <= 0:
@@ -330,8 +386,10 @@ class BoozyBank(commands.Cog):
                 msg = await self.bot.wait_for("message", check=check, timeout=remaining)
             except asyncio.TimeoutError:
                 break
+
             ans_attempt = msg.content.strip().upper()
             answered_users.add(msg.author.id)
+
             if ans_attempt == correct_answer:
                 winner = msg.author
                 elapsed = time.time() - start_time
@@ -345,7 +403,9 @@ class BoozyBank(commands.Cog):
                     await msg.add_reaction("❌")
                 except discord.HTTPException:
                     pass
+
         self.active_quizzes.discard(channel.id)
+
         if winner:
             base_reward_key = f"{difficulty}_reward"
             base_reward = await self.config.guild(ctx.guild).get_attr(base_reward_key)()
@@ -353,6 +413,7 @@ class BoozyBank(commands.Cog):
             # Apply reflex multiplier
             multiplier, speed_tier = self._get_speed_multiplier(elapsed)
             reward = int(base_reward * multiplier)
+
             deposit_success = True
             max_bal = 0
             try:
@@ -360,11 +421,13 @@ class BoozyBank(commands.Cog):
             except bank.errors.BalanceTooHigh:
                 deposit_success = False
                 max_bal = await bank.get_max_balance(ctx.guild)
+
             # Update database
             current_wins = await self.config.member(winner).wins()
             current_earnings = await self.config.member(winner).earnings()
             await self.config.member(winner).wins.set(current_wins + 1)
             await self.config.member(winner).earnings.set(current_earnings + reward)
+
             winner_emb = discord.Embed(
                 title="🎉 We have a winner! 🎉",
                 color=discord.Color.green(),
@@ -375,12 +438,14 @@ class BoozyBank(commands.Cog):
                             f"⚡ **Speed Rank:** {speed_tier}\n"
                             f"💰 **Reward:** `{reward}` {currency_name} *(Multiplier: {multiplier}x)*"
             )
+
             if not deposit_success:
                 winner_emb.add_field(
                     name="⚠️ Wallet Full",
                     value=f"You did not receive your reward because your bank account has reached the limit of `{max_bal}` {currency_name}!",
                     inline=False
                 )
+
             show_explanation = await self.config.guild(ctx.guild).show_explanation()
             if show_explanation and explanation:
                 winner_emb.add_field(
@@ -388,9 +453,11 @@ class BoozyBank(commands.Cog):
                     value=explanation,
                     inline=False
                 )
+
             avatar_url = winner.display_avatar.url if hasattr(winner, "display_avatar") else winner.avatar_url
             winner_emb.set_thumbnail(url=avatar_url)
             await ctx.send(embed=winner_emb)
+
         else:
             timeout_emb = discord.Embed(
                 title="⏰ Time is up!",
@@ -399,6 +466,7 @@ class BoozyBank(commands.Cog):
                             f"**Question:** {question}\n"
                             f"**Correct Answer:** **{correct_answer}** ({options[correct_answer]})"
             )
+
             show_explanation = await self.config.guild(ctx.guild).show_explanation()
             if show_explanation and explanation:
                 timeout_emb.add_field(
@@ -406,28 +474,37 @@ class BoozyBank(commands.Cog):
                     value=explanation,
                     inline=False
                 )
+
             await ctx.send(embed=timeout_emb)
+
     @commands.command()
     @commands.guild_only()
     async def boozygame(self, ctx, rounds: int = 5, *, topic_and_difficulty: str = None):
         """Start a multi-round fast-paced trivia game!
+
         All questions are pre-generated in a single API call to keep the game incredibly fast-paced with zero delays.
         Features speed reflex multipliers and overall podium awards with anti-inflation caps.
+
         Parameters:
         `rounds`: Number of rounds to play (between 1 and 10, default is 5).
         `topic_and_difficulty`: Optional custom topic and/or difficulty.
+
         Example:
         `[p]boozygame 5 Pop Culture hard`
         """
         channel = ctx.channel
+
         if rounds < 1 or rounds > 10:
             await ctx.send("❌ Number of rounds must be between 1 and 10.")
             return
+
         if channel.id in self.active_quizzes:
             await ctx.send("🍻 A game or quiz is already active in this channel! Solve that one first.")
             return
+
         topic = None
         difficulty = "medium"
+
         if topic_and_difficulty:
             words = topic_and_difficulty.strip().split()
             if len(words) > 1 and words[-1].lower() in ["easy", "medium", "hard"]:
@@ -437,14 +514,18 @@ class BoozyBank(commands.Cog):
                 difficulty = words[0].lower()
             else:
                 topic = topic_and_difficulty.strip()
+
         if not topic:
             default_topics = await self.config.guild(ctx.guild).default_topics()
             topic = random.choice(default_topics) if default_topics else "General Knowledge"
+
         self.active_quizzes.add(channel.id)
+
         generating_msg = await ctx.send(
             f"🍻 Preparing a **{rounds}-round** fast-paced game about **{topic}** ({difficulty})...\n"
             f"Fetching all questions in advance for a lightning-fast experience! Please wait..."
         )
+
         try:
             questions = await self._generate_quiz_batch(ctx.guild, topic, difficulty, rounds)
         except Exception as e:
@@ -453,10 +534,11 @@ class BoozyBank(commands.Cog):
             log.error(f"Error batch-generating quiz game: {e}", exc_info=True)
             await ctx.send(f"❌ Failed to load the trivia game: {e}")
             return
+
         await generating_msg.delete()
-        # Scoreboards and payouts
-        game_scores = {} # {Member: correct_answers_count}
-        pending_payouts = {} # {Member: coins_earned}
+
+        game_scores = {}
+        pending_payouts = {}
         currency_name = await bank.get_currency_name(ctx.guild)
         
         base_reward_key = f"{difficulty}_reward"
@@ -464,23 +546,27 @@ class BoozyBank(commands.Cog):
         timeout = await self.config.guild(ctx.guild).timeout()
         allow_second_guess = await self.config.guild(ctx.guild).allow_second_guess()
         show_explanation = await self.config.guild(ctx.guild).show_explanation()
+
         await ctx.send(
             f"🎉 **BoozyGame Started!** 🎉\n"
             f"**Topic:** {topic} | **Difficulty:** {difficulty.capitalize()} | **Rounds:** {rounds}\n"
             f"Get ready, Round 1 is starting in 3 seconds..."
         )
         await asyncio.sleep(3.0)
+
         for index, quiz in enumerate(questions, start=1):
             if channel.id not in self.active_quizzes:
-                # In case the cog is unloaded or interrupted
                 break
+
             question = quiz["question"]
             options = quiz["options"]
             correct_answer = quiz["correct_answer"]
             explanation = quiz["explanation"]
+
             choices_str = ""
             for letter, opt in options.items():
                 choices_str += f"**{letter}**: {opt}\n"
+
             emb = discord.Embed(
                 title=f"🍻 BoozyGame - Round {index} of {rounds} 🍻",
                 color=discord.Color.orange(),
@@ -489,10 +575,12 @@ class BoozyBank(commands.Cog):
             emb.set_footer(text=f"Type A, B, C, or D! | Round limit: {timeout}s")
             
             round_msg = await ctx.send(embed=emb)
+
             answered_users = set()
             start_time = time.time()
             winner = None
             elapsed = 0.0
+
             def check(m):
                 if m.channel.id != ctx.channel.id:
                     return False
@@ -504,6 +592,7 @@ class BoozyBank(commands.Cog):
                 if not allow_second_guess and m.author.id in answered_users:
                     return False
                 return True
+
             while time.time() - start_time < timeout:
                 remaining = timeout - (time.time() - start_time)
                 if remaining <= 0:
@@ -512,8 +601,10 @@ class BoozyBank(commands.Cog):
                     msg = await self.bot.wait_for("message", check=check, timeout=remaining)
                 except asyncio.TimeoutError:
                     break
+
                 ans_attempt = msg.content.strip().upper()
                 answered_users.add(msg.author.id)
+
                 if ans_attempt == correct_answer:
                     winner = msg.author
                     elapsed = time.time() - start_time
@@ -527,13 +618,14 @@ class BoozyBank(commands.Cog):
                         await msg.add_reaction("❌")
                     except discord.HTTPException:
                         pass
+
             if winner:
                 multiplier, speed_tier = self._get_speed_multiplier(elapsed)
                 payout = int(base_reward * multiplier)
                 
-                # Record scoreboard and pending coins
                 game_scores[winner] = game_scores.get(winner, 0) + 1
                 pending_payouts[winner] = pending_payouts.get(winner, 0) + payout
+
                 round_win_emb = discord.Embed(
                     title=f"🎯 Round {index} Won!",
                     color=discord.Color.green(),
@@ -557,56 +649,57 @@ class BoozyBank(commands.Cog):
                     round_timeout_emb.add_field(name="ℹ️ Explanation", value=explanation, inline=False)
                 
                 await ctx.send(embed=round_timeout_emb)
-            # Briefly pause between rounds
+
             if index < rounds:
                 await ctx.send(f"Round {index+1} is starting in 5 seconds...")
                 await asyncio.sleep(5.0)
-        # Release active lock
+
         self.active_quizzes.discard(channel.id)
-        # End of Game Calculations
+
         if not game_scores:
             await ctx.send("🏁 **Game Over!** Nobody won any rounds, so no coins will be distributed.")
             return
-        # Sort to find grand champions
+
         sorted_scores = sorted(game_scores.items(), key=lambda x: x[1], reverse=True)
         max_score = sorted_scores[0][1]
         
-        # All members who hit max score share or get the Grand Winner Bonus
         grand_winners = [member for member, score in sorted_scores if score == max_score]
         grand_bonus = await self.config.guild(ctx.guild).grand_winner_bonus()
+
         for winner in grand_winners:
             pending_payouts[winner] = pending_payouts.get(winner, 0) + grand_bonus
-        # Check hard limits
+
         max_game_payout = await self.config.guild(ctx.guild).max_game_payout()
         total_payout_requested = sum(pending_payouts.values())
+
         scaling_factor = 1.0
         if total_payout_requested > max_game_payout:
             scaling_factor = max_game_payout / total_payout_requested
-        # Distribute Payouts and Update Databases
+
         payout_results = {}
         for player, amount in pending_payouts.items():
             final_payout = int(amount * scaling_factor)
             payout_results[player] = final_payout
-            # Deposit into bank
+
             try:
                 await bank.deposit_credits(player, final_payout)
             except bank.errors.BalanceTooHigh:
-                # Catch silently so code doesn't crash, reported in final embed
                 pass
-            # Update cog database stats
+
             wins_to_add = game_scores.get(player, 0)
             current_wins = await self.config.member(player).wins()
             current_earnings = await self.config.member(player).earnings()
             
             await self.config.member(player).wins.set(current_wins + wins_to_add)
             await self.config.member(player).earnings.set(current_earnings + final_payout)
-        # Prepare final gorgeous podium embed
+
         podium_emb = discord.Embed(
             title="🏁 Trivia Game Over! Final Scores 🏁",
             color=discord.Color.gold(),
             description=f"**Topic:** {topic} | **Difficulty:** {difficulty.capitalize()}\n"
                         f"Thank you for playing BoozyGame! Here are the champions:\n\n"
         )
+
         podium_text = ""
         for rank, (player, score) in enumerate(sorted_scores, start=1):
             medal = "🥇 " if rank == 1 else "🥈 " if rank == 2 else "🥉 " if rank == 3 else f"#{rank} "
@@ -614,7 +707,9 @@ class BoozyBank(commands.Cog):
             
             champ_badge = "👑 **GRAND CHAMPION** " if player in grand_winners else ""
             podium_text += f"{medal}{champ_badge}**{player.display_name}** - `{score}` Correct Answers | Won `{final_coins}` {currency_name}\n"
+
         podium_emb.description = f"{podium_emb.description}{podium_text}"
+
         if scaling_factor < 1.0:
             podium_emb.add_field(
                 name="⚖️ Economy Hard-Limit Applied",
@@ -637,13 +732,16 @@ class BoozyBank(commands.Cog):
                 value=f"It's a tie! {champs_mention} each receive a `{grand_bonus}` {currency_name} Grand Winner Bonus!",
                 inline=False
             )
+
         await ctx.send(embed=podium_emb)
+
     @commands.group()
     @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)
     async def boozyquizset(self, ctx):
         """Manage BoozyBank Quiz settings."""
         pass
+
     @boozyquizset.command()
     async def easy(self, ctx, amount: int):
         """Set the reward amount for easy quiz questions."""
@@ -652,6 +750,7 @@ class BoozyBank(commands.Cog):
             return
         await self.config.guild(ctx.guild).easy_reward.set(amount)
         await ctx.send(f"Easy reward set to `{amount}` coins.")
+
     @boozyquizset.command()
     async def medium(self, ctx, amount: int):
         """Set the reward amount for medium quiz questions."""
@@ -660,6 +759,7 @@ class BoozyBank(commands.Cog):
             return
         await self.config.guild(ctx.guild).medium_reward.set(amount)
         await ctx.send(f"Medium reward set to `{amount}` coins.")
+
     @boozyquizset.command()
     async def hard(self, ctx, amount: int):
         """Set the reward amount for hard quiz questions."""
@@ -668,6 +768,7 @@ class BoozyBank(commands.Cog):
             return
         await self.config.guild(ctx.guild).hard_reward.set(amount)
         await ctx.send(f"Hard reward set to `{amount}` coins.")
+
     @boozyquizset.command()
     async def timeout(self, ctx, seconds: int):
         """Set the answer timeout (between 10 and 120 seconds)."""
@@ -676,23 +777,27 @@ class BoozyBank(commands.Cog):
             return
         await self.config.guild(ctx.guild).timeout.set(seconds)
         await ctx.send(f"Answer time limit set to `{seconds}` seconds.")
+
     @boozyquizset.command()
     async def model(self, ctx, model_name: str):
         """Set the OpenAI model (e.g. gpt-4o-mini, gpt-4o)."""
         await self.config.guild(ctx.guild).model.set(model_name)
         await ctx.send(f"OpenAI model set to `{model_name}`.")
+
     @boozyquizset.command()
     async def secondguess(self, ctx, toggle: bool):
         """Set whether players can make a second guess if they are wrong."""
         await self.config.guild(ctx.guild).allow_second_guess.set(toggle)
         status = "allowed" if toggle else "not allowed"
         await ctx.send(f"A second guess is now **{status}**.")
+
     @boozyquizset.command()
     async def showexplanation(self, ctx, toggle: bool):
         """Set whether to show the explanation after the quiz ends."""
         await self.config.guild(ctx.guild).show_explanation.set(toggle)
         status = "on" if toggle else "off"
         await ctx.send(f"Showing explanations is now **{status}**.")
+
     @boozyquizset.command()
     async def maxpayout(self, ctx, amount: int):
         """Set the maximum coin payout limit for a single multi-round game."""
@@ -701,6 +806,7 @@ class BoozyBank(commands.Cog):
             return
         await self.config.guild(ctx.guild).max_game_payout.set(amount)
         await ctx.send(f"Maximum game payout limit set to `{amount}` coins.")
+
     @boozyquizset.command()
     async def grandbonus(self, ctx, amount: int):
         """Set the coin bonus awarded to the overall game winner."""
@@ -709,10 +815,12 @@ class BoozyBank(commands.Cog):
             return
         await self.config.guild(ctx.guild).grand_winner_bonus.set(amount)
         await ctx.send(f"Grand winner bonus set to `{amount}` coins.")
+
     @boozyquizset.group(name="topics")
     async def _topics(self, ctx):
         """Manage the list of default random topics."""
         pass
+
     @_topics.command(name="add")
     async def add_topic(self, ctx, *, topic: str):
         """Add a new topic to the default list."""
@@ -723,6 +831,7 @@ class BoozyBank(commands.Cog):
                 return
             topics.append(topic)
         await ctx.send(f"Topic '{topic}' has been added to the list.")
+
     @_topics.command(name="remove")
     async def remove_topic(self, ctx, *, topic: str):
         """Remove a topic from the default list."""
@@ -733,6 +842,7 @@ class BoozyBank(commands.Cog):
                 return
             topics.remove(topic)
         await ctx.send(f"Topic '{topic}' has been removed from the list.")
+
     @_topics.command(name="list")
     async def list_topics(self, ctx):
         """Show all configured default topics."""
@@ -742,6 +852,7 @@ class BoozyBank(commands.Cog):
             return
         formatted = "\n".join(f"- {t}" for t in topics)
         await ctx.send(f"**Default quiz topics:**\n{box(formatted)}")
+
     @boozyquizset.command()
     async def settings(self, ctx):
         """View the current BoozyBank Quiz settings."""
@@ -756,7 +867,9 @@ class BoozyBank(commands.Cog):
         topics = await config_guild.default_topics()
         max_payout = await config_guild.max_game_payout()
         grand_bonus = await config_guild.grand_winner_bonus()
+
         currency_name = await bank.get_currency_name(ctx.guild)
+
         emb = discord.Embed(
             title="🍻 BoozyBank Quiz Settings 🍻",
             color=discord.Color.blue()
@@ -771,16 +884,20 @@ class BoozyBank(commands.Cog):
         emb.add_field(name="⚖️ Max Game Payout", value=f"`{max_payout}` {currency_name}", inline=True)
         emb.add_field(name="👑 Grand Winner Bonus", value=f"`{grand_bonus}` {currency_name}", inline=True)
         emb.add_field(name="📝 Default Topics", value=f"`{len(topics)}` topics", inline=True)
+
         await ctx.send(embed=emb)
+
     @commands.command()
     @commands.guild_only()
     async def boozyquizstats(self, ctx, member: discord.Member = None):
         """View quiz statistics for yourself or another member."""
         if not member:
             member = ctx.author
+
         wins = await self.config.member(member).wins()
         earnings = await self.config.member(member).earnings()
         currency_name = await bank.get_currency_name(ctx.guild)
+
         emb = discord.Embed(
             title=f"📊 Trivia Stats for {member.display_name}",
             color=discord.Color.purple()
@@ -789,7 +906,9 @@ class BoozyBank(commands.Cog):
         emb.set_thumbnail(url=avatar_url)
         emb.add_field(name="🏆 Total Wins", value=f"`{wins}` quiz rounds won", inline=False)
         emb.add_field(name="💰 Total Earned", value=f"`{earnings}` {currency_name}", inline=False)
+
         await ctx.send(embed=emb)
+
     @commands.command()
     @commands.guild_only()
     async def boozyquizleaderboard(self, ctx):
@@ -798,26 +917,33 @@ class BoozyBank(commands.Cog):
         if not all_members:
             await ctx.send("Nobody has won a quiz in this server yet!")
             return
+
         leaderboard_data = []
         for member_id, data in all_members.items():
             wins = data.get("wins", 0)
             earnings = data.get("earnings", 0)
             if wins > 0:
                 leaderboard_data.append((member_id, wins, earnings))
+
         if not leaderboard_data:
             await ctx.send("Nobody has won a quiz in this server yet!")
             return
+
         leaderboard_data.sort(key=lambda x: x[1], reverse=True)
+
         currency_name = await bank.get_currency_name(ctx.guild)
+
         emb = discord.Embed(
             title="🏆 BoozyQuiz Top Players Leaderboard 🏆",
             color=discord.Color.gold(),
             description="The players with the most quiz round wins in this server!\n"
         )
+
         leaderboard_text = ""
         for index, (member_id, wins, earnings) in enumerate(leaderboard_data[:10], start=1):
             member = ctx.guild.get_member(member_id)
             name = member.display_name if member else f"Former Member ({member_id})"
+
             medal = ""
             if index == 1:
                 medal = "🥇 "
@@ -827,6 +953,8 @@ class BoozyBank(commands.Cog):
                 medal = "🥉 "
             else:
                 medal = f"#{index} "
+
             leaderboard_text += f"{medal}**{name}** - `{wins}` wins (`{earnings}` {currency_name})\n"
+
         emb.description = f"{emb.description}\n{leaderboard_text}"
         await ctx.send(embed=emb)
