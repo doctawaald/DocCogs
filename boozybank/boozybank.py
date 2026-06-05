@@ -31,6 +31,7 @@ class BoozyBank(commands.Cog):
             "final_cleanup_delay": 5, # default 5 minutes, 0 to disable
             "daily_limit": 5, # default 5 starts per day
             "min_players": 2, # default 2 players required
+            "reading_time": 0, # default 0 seconds (disabled)
             "default_topics": [
                 "Beer & Breweries",
                 "Classic Cocktails",
@@ -623,14 +624,39 @@ class BoozyBank(commands.Cog):
         allow_second_guess = await self.config.guild(ctx.guild).allow_second_guess()
         currency_name = await bank.get_currency_name(ctx.guild)
 
-        emb.set_footer(text=f"Click a button below or type A, B, C, D! | Time limit: {timeout}s")
+        reading_time = await self.config.guild(ctx.guild).reading_time()
+        if reading_time > 0:
+            emb.set_footer(text=f"📖 Reading Time: {reading_time}s | Answers locked!")
+        else:
+            emb.set_footer(text=f"Click a button below or type A, B, C, D! | Time limit: {timeout}s")
 
         question_msg = await ctx.send(embed=emb)
 
-        # Add emoji buttons in the background so the round timer starts instantly!
+        # Add emoji buttons in the background immediately!
         emoji_buttons = ["🇦", "🇧", "🇨", "🇩"]
         emoji_to_letter = {"🇦": "A", "🇧": "B", "🇨": "C", "🇩": "D"}
         asyncio.create_task(self._add_reactions_background(ctx, question_msg, emoji_buttons))
+
+        if reading_time > 0:
+            await asyncio.sleep(reading_time)
+            # Clear early player reactions
+            try:
+                question_msg = await ctx.channel.fetch_message(question_msg.id)
+                for rxn in question_msg.reactions:
+                    async for r_user in rxn.users():
+                        if r_user.id != self.bot.user.id:
+                            try:
+                                await rxn.remove(r_user)
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+            emb.set_footer(text=f"⚡ Answers are now OPEN! | Time limit: {timeout}s")
+            try:
+                await question_msg.edit(embed=emb)
+            except discord.HTTPException:
+                pass
 
         answered_users = set()
         player_msgs = []
@@ -940,12 +966,37 @@ class BoozyBank(commands.Cog):
                     color=discord.Color.orange(),
                     description=f"**QUESTION:**\n{question}\n\n**CHOICES:**\n{choices_str}"
                 )
-                emb.set_footer(text=f"Click a button below or type A, B, C, D! | Round limit: {timeout}s")
-                
+                reading_time = await self.config.guild(ctx.guild).reading_time()
+                if reading_time > 0:
+                    emb.set_footer(text=f"📖 Reading Time: {reading_time}s | Answers locked!")
+                else:
+                    emb.set_footer(text=f"Click a button below or type A, B, C, D! | Round limit: {timeout}s")
+
                 round_msg = await ctx.send(embed=emb)
 
-                # Add emoji buttons in the background so the round timer starts instantly!
+                # Add emoji buttons in the background immediately!
                 asyncio.create_task(self._add_reactions_background(ctx, round_msg, emoji_buttons))
+
+                if reading_time > 0:
+                    await asyncio.sleep(reading_time)
+                    # Clear early player reactions
+                    try:
+                        round_msg = await ctx.channel.fetch_message(round_msg.id)
+                        for rxn in round_msg.reactions:
+                            async for r_user in rxn.users():
+                                if r_user.id != self.bot.user.id:
+                                    try:
+                                        await rxn.remove(r_user)
+                                    except Exception:
+                                        pass
+                    except Exception:
+                        pass
+
+                    emb.set_footer(text=f"⚡ Answers are now OPEN! | Time limit: {timeout}s")
+                    try:
+                        await round_msg.edit(embed=emb)
+                    except discord.HTTPException:
+                        pass
 
                 answered_users = set()
                 player_msgs = []
@@ -1453,6 +1504,18 @@ class BoozyBank(commands.Cog):
         await ctx.send(f"Answer time limit set to `{seconds}` seconds.")
 
     @boozyquizset.command()
+    async def readingtime(self, ctx, seconds: int):
+        """Set the reading time delay before answers open (0 to 20 seconds)."""
+        if seconds < 0 or seconds > 20:
+            await ctx.send("Please choose a reading time between 0 and 20 seconds (0 to disable).")
+            return
+        await self.config.guild(ctx.guild).reading_time.set(seconds)
+        if seconds == 0:
+            await ctx.send("Reading time delay has been **disabled**.")
+        else:
+            await ctx.send(f"Reading time delay set to `{seconds}` seconds.")
+
+    @boozyquizset.command()
     async def model(self, ctx, model_name: str):
         """Set the OpenAI model (e.g. gpt-4o-mini, gpt-4o)."""
         await self.config.guild(ctx.guild).model.set(model_name)
@@ -1608,6 +1671,7 @@ class BoozyBank(commands.Cog):
         final_delay = await config_guild.final_cleanup_delay()
         daily_lim = await config_guild.daily_limit()
         min_play = await config_guild.min_players()
+        reading_time = await config_guild.reading_time()
 
         currency_name = await bank.get_currency_name(ctx.guild)
 
@@ -1617,6 +1681,7 @@ class BoozyBank(commands.Cog):
         )
         emb.add_field(name="🟢 Quiz Q Reward", value=f"`{quiz}` {currency_name}", inline=True)
         emb.add_field(name="⏱️ Time Limit", value=f"`{timeout}` seconds", inline=True)
+        emb.add_field(name="📖 Reading Time Delay", value=f"`{reading_time}` seconds" if reading_time > 0 else "Disabled", inline=True)
         emb.add_field(name="🧠 OpenAI Model", value=f"`{model}`", inline=True)
         emb.add_field(name="🔄 Second Guess?", value="Allowed" if second_guess else "Not allowed", inline=True)
         emb.add_field(name="🧹 Message Cleanup?", value="Enabled" if cleanup else "Disabled", inline=True)
