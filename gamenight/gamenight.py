@@ -15,18 +15,6 @@ class RSVPView(discord.ui.View):
         super().__init__(timeout=None)
         self.cog = cog
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        """Only allow the currently active RSVPView (attached to the loaded cog) to handle interactions.
-        Zombie views from previous reloads will have a stale cog reference and silently bow out."""
-        # Check if this view's cog is still the active GameNight cog on the bot
-        active_cog = self.cog.bot.get_cog("GameNight")
-        if active_cog is None:
-            return False
-        # Only the view belonging to the active cog should respond
-        if not hasattr(active_cog, 'rsvp_view') or active_cog.rsvp_view is not self:
-            return False
-        return True
-
     @discord.ui.select(
         custom_id="gn_rsvp_select",
         placeholder="When will you be online?",
@@ -44,8 +32,34 @@ class RSVPView(discord.ui.View):
         ]
     )
     async def rsvp_select(self, interaction: discord.Interaction, select: discord.ui.Select):
-        val = select.values[0]
-        await self.cog.handle_rsvp(interaction, val)
+        try:
+            val = select.values[0]
+            # Determine the correct cog to handle this interaction.
+            # If this view is a zombie from a previous reload, forward to the active cog.
+            active_cog = self.cog.bot.get_cog("GameNight")
+            if active_cog is not None:
+                await active_cog.handle_rsvp(interaction, val)
+            else:
+                # No active GameNight cog found — respond gracefully
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "⚠️ Game Night plugin is not loaded.", ephemeral=True
+                    )
+        except discord.errors.InteractionResponded:
+            pass  # Already responded — safe to ignore
+        except Exception as e:
+            # Catch-all: make sure Discord always gets a response to avoid "interaction failed"
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "⚠️ Something went wrong. Please try again.", ephemeral=True
+                    )
+                else:
+                    await interaction.followup.send(
+                        "⚠️ Something went wrong. Please try again.", ephemeral=True
+                    )
+            except Exception:
+                pass  # Nothing more we can do
 
 # Build alias lookup once at import time
 GAME_ALIASES = {name: data["aliases"] for name, data in GAMES.items()}
@@ -138,30 +152,43 @@ class GameNight(commands.Cog):
             return None, None
 
     async def handle_rsvp(self, interaction: discord.Interaction, time_val: str):
-        # Defer immediately to satisfy Discord's 3-second response window and prevent "this interaction failed"
-        await interaction.response.defer(ephemeral=True)
+        # Defer immediately to satisfy Discord's 3-second response window.
+        # Guard with is_done() in case another view instance already deferred this interaction.
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
 
-        if not self.is_open:
-            return await interaction.followup.send("Voting is currently closed.", ephemeral=True)
-            
-        async with self.config.players() as players:
-            players[str(interaction.user.id)] = time_val
-            if time_val == "No":
-                msg = "❌ You are marked as **not joining** today."
-            else:
-                msg = f"✅ You are marked as playing at **{time_val}**!"
+        try:
+            if not self.is_open:
+                return await interaction.followup.send("Voting is currently closed.", ephemeral=True)
                 
-        # Send ephemeral confirmation as a followup response
-        await interaction.followup.send(msg, ephemeral=True)
-        
-        # Update the embed
-        await self._update_rsvp_embed()
-        
-        # Reschedule the smart reminder based on the new earliest RSVP time
-        await self._reschedule_smart_reminder()
-        
-        # Check completion
-        await self.check_completion()
+            async with self.config.players() as players:
+                players[str(interaction.user.id)] = time_val
+                if time_val == "No":
+                    msg = "❌ You are marked as **not joining** today."
+                else:
+                    msg = f"✅ You are marked as playing at **{time_val}**!"
+                    
+            # Send ephemeral confirmation as a followup response
+            await interaction.followup.send(msg, ephemeral=True)
+            
+            # Update the embed
+            await self._update_rsvp_embed()
+            
+            # Reschedule the smart reminder based on the new earliest RSVP time
+            await self._reschedule_smart_reminder()
+            
+            # Check completion
+            await self.check_completion()
+        except discord.errors.InteractionResponded:
+            pass  # Already handled — safe to ignore
+        except Exception as e:
+            # Last resort: make sure the user gets feedback
+            try:
+                await interaction.followup.send(
+                    "⚠️ Something went wrong processing your RSVP. Please try again.", ephemeral=True
+                )
+            except Exception:
+                pass
 
     async def _update_rsvp_embed(self):
         channel, msg = await self._get_or_restore_vote_message()
