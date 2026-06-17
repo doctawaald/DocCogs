@@ -1,6 +1,7 @@
 from redbot.core import commands, Config
 from collections import defaultdict
 import discord
+from discord.ext import tasks
 import re
 import difflib
 import asyncio
@@ -101,6 +102,9 @@ class GameNight(commands.Cog):
         self._cleanup_task: asyncio.Task | None = None
         self._reminder_task: asyncio.Task | None = None
         self._smart_reminder_task: asyncio.Task | None = None
+
+        # Auto-open tracking
+        self._auto_opened_date: str | None = None  # ISO date string e.g. "2026-06-20"
         self._smart_reminder_sent: bool = False
 
         # Database setup
@@ -120,7 +124,11 @@ class GameNight(commands.Cog):
             "reminder_delay_hours": 2.0,
             "smart_reminder_offset_minutes": 60,
             "smart_reminder_enabled": True,
-            "players": {}
+            "players": {},
+            "auto_open_enabled": False,
+            "auto_open_time": "18:00",
+            "auto_open_days": [4, 5],
+            "auto_open_channel_id": None
         }
         self.config.register_global(**default_global)
 
@@ -295,6 +303,9 @@ class GameNight(commands.Cog):
         self.rsvp_view = RSVPView(self)
         self.bot.add_view(self.rsvp_view)
 
+        # Start the auto-open background loop
+        self._auto_open_loop.start()
+
     def cog_unload(self):
         """Clean up active persistent views and running tasks on cog unload."""
         if hasattr(self, 'rsvp_view'):
@@ -305,6 +316,8 @@ class GameNight(commands.Cog):
             self._reminder_task.cancel()
         if hasattr(self, '_smart_reminder_task') and self._smart_reminder_task and not self._smart_reminder_task.done():
             self._smart_reminder_task.cancel()
+        if self._auto_open_loop.is_running():
+            self._auto_open_loop.cancel()
 
     async def _track(self, msg: discord.Message):
         """Register a message for the post-session cleanup."""
@@ -583,9 +596,16 @@ class GameNight(commands.Cog):
         status = "**ENABLED** 💀" if not current else "**DISABLED** ☮️"
         await ctx.send(f"🛡️ Veto Mode is now {status}.")
 
-    @gamenight.command(name="open")
-    @commands.admin_or_permissions(administrator=True)
-    async def gn_open(self, ctx):
+    async def _do_open_vote(self, channel: discord.TextChannel, trigger_message: discord.Message = None):
+        """Shared logic to open a new voting session in the given channel.
+        
+        Parameters
+        ----------
+        channel : discord.TextChannel
+            The channel to post the voting embed in.
+        trigger_message : discord.Message, optional
+            The command message that triggered the open (tracked for cleanup).
+        """
         self.is_open = True
         self.votes.clear()
         self.all_voted_notified = False
@@ -632,13 +652,14 @@ class GameNight(commands.Cog):
             inline=False,
         )
 
-        msg = await ctx.send(embed=embed, view=RSVPView(self))
+        msg = await channel.send(embed=embed, view=RSVPView(self))
         self.vote_message = msg
-        self.vote_channel = ctx.channel
-        await self.config.vote_message.set([ctx.channel.id, msg.id])
+        self.vote_channel = channel
+        await self.config.vote_message.set([channel.id, msg.id])
 
         await self._track(msg)  # Track the open-vote embed
-        await self._track(ctx.message)  # Track the !gn open command itself
+        if trigger_message:
+            await self._track(trigger_message)  # Track the command message
 
         # Schedule voting reminder (only if delay > 0, i.e. not disabled)
         delay_hours = await self.config.reminder_delay_hours()
@@ -647,6 +668,11 @@ class GameNight(commands.Cog):
             reminder_time = time.time() + delay_seconds
             await self.config.reminder_time.set(reminder_time)
             self._reminder_task = asyncio.create_task(self._schedule_reminder(delay_seconds=delay_seconds))
+
+    @gamenight.command(name="open")
+    @commands.admin_or_permissions(administrator=True)
+    async def gn_open(self, ctx):
+        await self._do_open_vote(ctx.channel, trigger_message=ctx.message)
 
     @gamenight.command(name="close")
     @commands.admin_or_permissions(administrator=True)
@@ -954,7 +980,7 @@ class GameNight(commands.Cog):
             display = f"{minutes}m"
         
         await ctx.send(f"🔔 Smart Reminder offset set to **{display}** before the earliest RSVP time.")
-        
+
         # Reschedule if a session is currently open
         if self.is_open:
             await self._reschedule_smart_reminder()
@@ -1118,6 +1144,238 @@ class GameNight(commands.Cog):
 
         count = await self.config.total_sessions()
         await self.config.total_sessions.set(count + 1)
+
+    # ── Auto-Open Loop ──────────────────────────────────────────────────
+    @tasks.loop(seconds=30)
+    async def _auto_open_loop(self):
+        """Background loop that checks every 30 seconds if it's time to auto-open the vote."""
+        try:
+            enabled = await self.config.auto_open_enabled()
+            if not enabled:
+                return
+
+            # Don't auto-open if a session is already open
+            if self.is_open:
+                return
+
+            now = datetime.now()
+            today_str = now.strftime("%Y-%m-%d")
+
+            # Already auto-opened today?
+            if self._auto_opened_date == today_str:
+                return
+
+            # Check if today is an auto-open day (0=Monday ... 6=Sunday)
+            auto_days = await self.config.auto_open_days()
+            if now.weekday() not in auto_days:
+                return
+
+            # Check if current time >= the configured auto-open time
+            auto_time_str = await self.config.auto_open_time()
+            try:
+                target_hour, target_minute = map(int, auto_time_str.split(":"))
+            except (ValueError, AttributeError):
+                return
+
+            target_dt = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+            if now < target_dt:
+                return
+
+            # All conditions met — auto-open!
+            channel_id = await self.config.auto_open_channel_id()
+            if not channel_id:
+                return
+
+            channel = self.bot.get_channel(channel_id)
+            if not channel:
+                try:
+                    channel = await self.bot.fetch_channel(channel_id)
+                except Exception:
+                    return
+
+            self._auto_opened_date = today_str
+            await self._do_open_vote(channel)
+        except Exception as e:
+            print(f"[GameNight] Auto-open loop error: {e}")
+
+    @_auto_open_loop.before_loop
+    async def _before_auto_open_loop(self):
+        """Wait until the bot is ready before starting the auto-open loop."""
+        await self.bot.wait_until_ready()
+
+    # ── Auto-Open Commands ──────────────────────────────────────────────
+    @gamenight.group(name="autoopen", invoke_without_command=True)
+    @commands.admin_or_permissions(administrator=True)
+    async def gn_autoopen(self, ctx):
+        """Show current auto-open settings."""
+        enabled = await self.config.auto_open_enabled()
+        auto_time = await self.config.auto_open_time()
+        channel_id = await self.config.auto_open_channel_id()
+        auto_days = await self.config.auto_open_days()
+
+        status = "✅ ON" if enabled else "❌ OFF"
+
+        day_names = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
+        days_str = ", ".join(day_names[d] for d in sorted(auto_days)) if auto_days else "Geen"
+
+        if channel_id:
+            channel = self.bot.get_channel(channel_id)
+            channel_str = channel.mention if channel else f"ID: {channel_id} (niet gevonden)"
+        else:
+            channel_str = "**Niet ingesteld** — gebruik `!gn autoopen channel #kanaal`"
+
+        embed = discord.Embed(
+            title="⏰ Auto-Open Instellingen",
+            color=discord.Color.blue(),
+        )
+        embed.add_field(name="Status", value=status, inline=True)
+        embed.add_field(name="Tijd", value=f"**{auto_time}**", inline=True)
+        embed.add_field(name="Dagen", value=days_str, inline=False)
+        embed.add_field(name="Kanaal", value=channel_str, inline=False)
+        embed.set_footer(text="Gebruik !gn autoopen on/off/time/channel om aan te passen.")
+
+        await ctx.send(embed=embed)
+
+    @gn_autoopen.command(name="on")
+    @commands.admin_or_permissions(administrator=True)
+    async def gn_autoopen_on(self, ctx):
+        """Enable auto-open."""
+        channel_id = await self.config.auto_open_channel_id()
+        if not channel_id:
+            return await ctx.send(
+                "❌ Stel eerst een kanaal in met `!gn autoopen channel #kanaal` "
+                "voordat je auto-open activeert."
+            )
+        await self.config.auto_open_enabled.set(True)
+        auto_time = await self.config.auto_open_time()
+        await ctx.send(f"✅ Auto-open is nu **AAN**. De vote opent automatisch om **{auto_time}**.")
+
+    @gn_autoopen.command(name="off")
+    @commands.admin_or_permissions(administrator=True)
+    async def gn_autoopen_off(self, ctx):
+        """Disable auto-open."""
+        await self.config.auto_open_enabled.set(False)
+        await ctx.send("❌ Auto-open is nu **UIT**.")
+
+    @gn_autoopen.command(name="time")
+    @commands.admin_or_permissions(administrator=True)
+    async def gn_autoopen_time(self, ctx, time_str: str):
+        """Set the auto-open time (HH:MM format, e.g. 18:00 or 19:30)."""
+        match = re.match(r'^(\d{1,2}):(\d{2})$', time_str.strip())
+        if not match:
+            return await ctx.send("❌ Ongeldig formaat. Gebruik `HH:MM`, bijv. `18:00` of `19:30`.")
+
+        hour, minute = int(match.group(1)), int(match.group(2))
+        if hour > 23 or minute > 59:
+            return await ctx.send("❌ Ongeldige tijd. Uren 0-23, minuten 0-59.")
+
+        formatted = f"{hour:02d}:{minute:02d}"
+        await self.config.auto_open_time.set(formatted)
+        await ctx.send(f"⏰ Auto-open tijd ingesteld op **{formatted}**.")
+
+    @gn_autoopen.command(name="channel")
+    @commands.admin_or_permissions(administrator=True)
+    async def gn_autoopen_channel(self, ctx, channel: discord.TextChannel):
+        """Set the channel where auto-open posts the voting embed."""
+        await self.config.auto_open_channel_id.set(channel.id)
+        await ctx.send(f"📢 Auto-open kanaal ingesteld op {channel.mention}.")
+
+    # ── Debug Time Command ──────────────────────────────────────────────
+    @gamenight.command(name="debugtime")
+    @commands.admin_or_permissions(administrator=True)
+    async def gn_debugtime(self, ctx):
+        """Show timezone and scheduling debug information."""
+        now_utc = datetime.now(timezone.utc)
+        now_local = datetime.now()
+        utc_offset = now_local - now_utc.replace(tzinfo=None)
+        offset_hours = utc_offset.total_seconds() / 3600
+
+        # Format offset as +HH:MM
+        sign = "+" if offset_hours >= 0 else "-"
+        abs_hours = int(abs(offset_hours))
+        abs_mins = int((abs(offset_hours) - abs_hours) * 60)
+        offset_str = f"{sign}{abs_hours:02d}:{abs_mins:02d}"
+
+        day_names = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
+        today_name = day_names[now_local.weekday()]
+
+        # Auto-open info
+        enabled = await self.config.auto_open_enabled()
+        auto_time = await self.config.auto_open_time()
+        auto_days = await self.config.auto_open_days()
+        auto_days_str = ", ".join(day_names[d] for d in sorted(auto_days)) if auto_days else "Geen"
+        is_auto_day = now_local.weekday() in auto_days
+
+        # Calculate next auto-open
+        next_open_str = "Uitgeschakeld"
+        if enabled and auto_days:
+            try:
+                target_h, target_m = map(int, auto_time.split(":"))
+                # Find the next occurrence
+                check = now_local.replace(hour=target_h, minute=target_m, second=0, microsecond=0)
+                # If today is an auto-day and the time hasn't passed yet, it's today
+                if now_local.weekday() in auto_days and now_local < check:
+                    next_open_str = f"{today_name} {auto_time} (vandaag)"
+                else:
+                    # Search the next 7 days
+                    for i in range(1, 8):
+                        future = now_local + timedelta(days=i)
+                        if future.weekday() in auto_days:
+                            future_name = day_names[future.weekday()]
+                            future_date = future.strftime("%Y-%m-%d")
+                            next_open_str = f"{future_name} {auto_time} ({future_date})"
+                            break
+            except (ValueError, AttributeError):
+                next_open_str = "⚠️ Kon niet berekenen (ongeldige auto_open_time)"
+
+        embed = discord.Embed(
+            title="🕵️ Debug: Tijd & Tijdzone",
+            color=discord.Color.greyple(),
+        )
+        embed.add_field(
+            name="🕐 Tijden",
+            value=(
+                f"**UTC:** {now_utc.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"**Lokaal:** {now_local.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"**Offset:** UTC{offset_str}"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="📅 Dag",
+            value=(
+                f"**Vandaag:** {today_name} (weekday={now_local.weekday()})\n"
+                f"**Is auto-open dag?** {'✅ Ja' if is_auto_day else '❌ Nee'}"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="⏰ Auto-Open Config",
+            value=(
+                f"**Enabled:** {'✅' if enabled else '❌'}\n"
+                f"**Tijd:** {auto_time}\n"
+                f"**Dagen:** {auto_days_str}\n"
+                f"**Vandaag al geopend?** {'Ja' if self._auto_opened_date == now_local.strftime('%Y-%m-%d') else 'Nee'}"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="📌 Volgende Auto-Open",
+            value=next_open_str,
+            inline=False,
+        )
+        embed.add_field(
+            name="🔧 System Info",
+            value=(
+                f"**time.tzname:** {time.tzname}\n"
+                f"**time.timezone:** {time.timezone} sec ({time.timezone / 3600:.1f}h)\n"
+                f"**time.daylight:** {time.daylight}"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Als de offset niet klopt, draait de bot mogelijk in een verkeerde tijdzone.")
+
+        await ctx.send(embed=embed)
 
 
 async def setup(bot):
