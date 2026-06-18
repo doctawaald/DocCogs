@@ -20,7 +20,7 @@ class RSVPView(discord.ui.View):
         custom_id="gn_rsvp_select",
         placeholder="When will you be online?",
         options=[
-            discord.SelectOption(label="Earlier (Before 20:30)", emoji="🕰️", value="Earlier"),
+            discord.SelectOption(label="Earlier (Before 20:00)", emoji="🕰️", value="Earlier"),
             discord.SelectOption(label="20:00", emoji="🕗", value="20:00"),
             discord.SelectOption(label="20:30", emoji="🕣", value="20:30"),
             discord.SelectOption(label="21:00", emoji="🕘", value="21:00"),
@@ -100,12 +100,13 @@ class GameNight(commands.Cog):
         # Message tracking for auto-cleanup
         self.tracked_messages: list[discord.Message] = []
         self._cleanup_task: asyncio.Task | None = None
+        self._auto_close_task: asyncio.Task | None = None
         self._reminder_task: asyncio.Task | None = None
         self._smart_reminder_task: asyncio.Task | None = None
+        self._smart_reminder_sent: bool = False
 
         # Auto-open tracking
         self._auto_opened_date: str | None = None  # ISO date string e.g. "2026-06-20"
-        self._smart_reminder_sent: bool = False
 
         # Database setup
         self.config = Config.get_conf(self, identifier=847372839210)
@@ -128,7 +129,10 @@ class GameNight(commands.Cog):
             "auto_open_enabled": False,
             "auto_open_time": "18:00",
             "auto_open_days": [4, 5],
-            "auto_open_channel_id": None
+            "auto_open_channel_id": None,
+            "auto_close_hours": 16.0,
+            "auto_close_time": None,
+            "auto_opened_date": None
         }
         self.config.register_global(**default_global)
 
@@ -258,6 +262,9 @@ class GameNight(commands.Cog):
         raw_votes = await self.config.votes()
         self.votes = {int(k): v for k, v in raw_votes.items()}
         
+        # Restore auto-opened date so we don't double-open after a reboot
+        self._auto_opened_date = await self.config.auto_opened_date()
+        
         # We don't eagerly load/fetch the message here during startup hook because the channel cache
         # might not be fully loaded. Instead, the lazy loader _get_or_restore_vote_message recovers it on-demand.
         self.vote_channel = None
@@ -268,6 +275,13 @@ class GameNight(commands.Cog):
             now = time.time()
             delay = max(0, cleanup_time - now)
             self._cleanup_task = asyncio.create_task(self._schedule_cleanup(delay_seconds=delay))
+
+        # Restore auto-close timer if one was scheduled
+        auto_close_time = await self.config.auto_close_time()
+        if auto_close_time:
+            now = time.time()
+            delay = max(0, auto_close_time - now)
+            self._auto_close_task = asyncio.create_task(self._schedule_auto_close(delay_seconds=delay))
 
         reminder_time = await self.config.reminder_time()
         if reminder_time:
@@ -312,6 +326,8 @@ class GameNight(commands.Cog):
             self.rsvp_view.stop()
         if hasattr(self, '_cleanup_task') and self._cleanup_task and not self._cleanup_task.done():
             self._cleanup_task.cancel()
+        if hasattr(self, '_auto_close_task') and self._auto_close_task and not self._auto_close_task.done():
+            self._auto_close_task.cancel()
         if hasattr(self, '_reminder_task') and self._reminder_task and not self._reminder_task.done():
             self._reminder_task.cancel()
         if hasattr(self, '_smart_reminder_task') and self._smart_reminder_task and not self._smart_reminder_task.done():
@@ -329,7 +345,49 @@ class GameNight(commands.Cog):
     async def _schedule_cleanup(self, delay_seconds: float):
         """Wait `delay_seconds` then bulk-delete all tracked messages, fetching channels if uncached."""
         await asyncio.sleep(delay_seconds)
-        
+        await self._do_cleanup()
+        await self.config.cleanup_time.set(None)
+
+    async def _schedule_auto_close(self, delay_seconds: float):
+        """Wait `delay_seconds` then auto-close the vote and clean up all tracked messages.
+
+        This is a fallback in case nobody ever calls !gn close (e.g. nobody showed up).
+        """
+        await asyncio.sleep(delay_seconds)
+
+        await self.config.auto_close_time.set(None)
+
+        if not self.is_open:
+            # Vote was already closed manually — just clean up leftover messages
+            await self._do_cleanup()
+            return
+
+        # Close the vote
+        self.is_open = False
+        await self.config.is_open.set(False)
+        self.all_voted_notified = False
+        self.too_many_notified = False
+
+        # Remove the RSVP view from the embed
+        channel, msg = await self._get_or_restore_vote_message()
+        if msg:
+            try:
+                await msg.edit(view=None)
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+        # Cancel voting reminders
+        if self._reminder_task and not self._reminder_task.done():
+            self._reminder_task.cancel()
+        if self._smart_reminder_task and not self._smart_reminder_task.done():
+            self._smart_reminder_task.cancel()
+        await self.config.reminder_time.set(None)
+
+        # Clean up all tracked messages
+        await self._do_cleanup()
+
+    async def _do_cleanup(self):
+        """Delete all tracked messages and clear the tracking list."""
         tracked = await self.config.tracked_messages()
         for channel_id, msg_id in tracked:
             try:
@@ -340,11 +398,9 @@ class GameNight(commands.Cog):
                     msg = channel.get_partial_message(msg_id)
                     await msg.delete()
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                pass  # Already deleted or missing permissions — ignore
-                
+                pass
         self.tracked_messages.clear()
         await self.config.tracked_messages.set([])
-        await self.config.cleanup_time.set(None)
 
     async def _schedule_reminder(self, delay_seconds: float):
         """Wait `delay_seconds` then ping everyone who RSVP'd but hasn't voted yet."""
@@ -669,6 +725,16 @@ class GameNight(commands.Cog):
             await self.config.reminder_time.set(reminder_time)
             self._reminder_task = asyncio.create_task(self._schedule_reminder(delay_seconds=delay_seconds))
 
+        # Schedule auto-close fallback (closes vote + cleans up if nobody ever calls !gn close)
+        if self._auto_close_task and not self._auto_close_task.done():
+            self._auto_close_task.cancel()
+        auto_close_hours = await self.config.auto_close_hours()
+        if auto_close_hours > 0:
+            auto_close_seconds = auto_close_hours * 3600
+            auto_close_at = time.time() + auto_close_seconds
+            await self.config.auto_close_time.set(auto_close_at)
+            self._auto_close_task = asyncio.create_task(self._schedule_auto_close(delay_seconds=auto_close_seconds))
+
     @gamenight.command(name="open")
     @commands.admin_or_permissions(administrator=True)
     async def gn_open(self, ctx):
@@ -704,6 +770,11 @@ class GameNight(commands.Cog):
         if self._cleanup_task and not self._cleanup_task.done():
             self._cleanup_task.cancel()
         self._cleanup_task = asyncio.create_task(self._schedule_cleanup(delay_seconds=delay_seconds))
+
+        # Cancel auto-close fallback (vote was closed manually, no need for the fallback)
+        if self._auto_close_task and not self._auto_close_task.done():
+            self._auto_close_task.cancel()
+        await self.config.auto_close_time.set(None)
 
         # Cancel voting reminders
         if self._reminder_task and not self._reminder_task.done():
@@ -849,10 +920,13 @@ class GameNight(commands.Cog):
         
         if self._cleanup_task and not self._cleanup_task.done():
             self._cleanup_task.cancel()
+        if self._auto_close_task and not self._auto_close_task.done():
+            self._auto_close_task.cancel()
         if self._reminder_task and not self._reminder_task.done():
             self._reminder_task.cancel()
         if self._smart_reminder_task and not self._smart_reminder_task.done():
             self._smart_reminder_task.cancel()
+        await self.config.auto_close_time.set(None)
             
         await ctx.send("🧹 **Gamenight has been fully reset.** (Game history remains intact).")
 
@@ -1194,6 +1268,7 @@ class GameNight(commands.Cog):
                     return
 
             self._auto_opened_date = today_str
+            await self.config.auto_opened_date.set(today_str)
             await self._do_open_vote(channel)
         except Exception as e:
             print(f"[GameNight] Auto-open loop error: {e}")
