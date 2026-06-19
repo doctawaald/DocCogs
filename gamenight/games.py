@@ -41,7 +41,7 @@ GAMES = {
     },
     "Windrose": {
         "aliases": ["wr", "windrose", "wind", "rose", "pirates"],
-        "max_players": 8,
+        "max_players": None,
     },
 
     # ── HORROR & CO-OP ────────────────────────────────────────────────────────
@@ -102,6 +102,15 @@ GAMES = {
     "Dale & Dawson Stationery Supplies": {
         "aliases": ["dale", "dawson", "ddss", "stationery", "manager", "daleanddawson"],
         "max_players": 4,
+    },
+    "Meccha Chameleon": {
+        "aliases": [
+            "meccha chameleon", "mecchachameleon", "mecha chameleon", "mechachameleon",
+            "chameleon", "meccha", "mecha", "cham",
+            "verfspel", "verstoppertje", "kameleon", "verf", "verstop", "verstoppen",
+            "meccha kameleon", "mecha kameleon"
+        ],
+        "max_players": 10,
     },
     "Mario Party (4-7)": {
         "aliases": ["marioparty", "mario", "board"],
