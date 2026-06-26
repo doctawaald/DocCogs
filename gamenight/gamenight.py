@@ -62,6 +62,70 @@ class RSVPView(discord.ui.View):
             except Exception:
                 pass  # Nothing more we can do
 
+class CloseVoteView(discord.ui.View):
+    """A view with a green 'Close Vote' button, attached to the 'all votes in' notification."""
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(
+        custom_id="gn_close_vote_btn",
+        label="Close Vote",
+        style=discord.ButtonStyle.success,
+        emoji="🛑"
+    )
+    async def close_vote(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            # Only admins can close
+            if not interaction.user.guild_permissions.administrator:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "⛔ Only admins can close the vote.", ephemeral=True
+                    )
+                return
+
+            active_cog = self.cog.bot.get_cog("GameNight")
+            if active_cog is None:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "⚠️ Game Night plugin is not loaded.", ephemeral=True
+                    )
+                return
+
+            if not active_cog.is_open:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "⛔ Voting is already closed.", ephemeral=True
+                    )
+                return
+
+            # Defer since close + results takes time
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+
+            # Disable the button on the message
+            button.disabled = True
+            button.label = "Vote Closed ✅"
+            await interaction.message.edit(view=self)
+
+            # Close the vote using shared logic
+            await active_cog._do_close_vote(interaction.channel)
+
+        except discord.errors.InteractionResponded:
+            pass
+        except Exception as e:
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "⚠️ Something went wrong. Please try again.", ephemeral=True
+                    )
+                else:
+                    await interaction.followup.send(
+                        "⚠️ Something went wrong. Please try again.", ephemeral=True
+                    )
+            except Exception:
+                pass
+
 # Build alias lookup once at import time
 GAME_ALIASES = {name: data["aliases"] for name, data in GAMES.items()}
 
@@ -289,9 +353,9 @@ class GameNight(commands.Cog):
             delay = max(0, reminder_time - now)
             self._reminder_task = asyncio.create_task(self._schedule_reminder(delay_seconds=delay))
 
-        # Clean up any duplicate RSVPViews from previous reloads (before cog_unload was added)
+        # Clean up any duplicate RSVPViews/CloseVoteViews from previous reloads
         for view in list(self.bot.persistent_views):
-            if view.__class__.__name__ == "RSVPView":
+            if view.__class__.__name__ in ("RSVPView", "CloseVoteView"):
                 try:
                     view.stop()
                 except Exception:
@@ -303,7 +367,7 @@ class GameNight(commands.Cog):
                     
         if hasattr(self.bot, "_connection") and hasattr(self.bot._connection, "_persistent_views"):
             for view in list(self.bot._connection._persistent_views):
-                if view.__class__.__name__ == "RSVPView":
+                if view.__class__.__name__ in ("RSVPView", "CloseVoteView"):
                     try:
                         view.stop()
                     except Exception:
@@ -313,9 +377,11 @@ class GameNight(commands.Cog):
                     except Exception:
                         pass
 
-        # Store view reference so we can stop it on unload to prevent duplicates
+        # Store view references so we can stop them on unload to prevent duplicates
         self.rsvp_view = RSVPView(self)
         self.bot.add_view(self.rsvp_view)
+        self.close_vote_view = CloseVoteView(self)
+        self.bot.add_view(self.close_vote_view)
 
         # Start the auto-open background loop
         self._auto_open_loop.start()
@@ -324,6 +390,8 @@ class GameNight(commands.Cog):
         """Clean up active persistent views and running tasks on cog unload."""
         if hasattr(self, 'rsvp_view'):
             self.rsvp_view.stop()
+        if hasattr(self, 'close_vote_view'):
+            self.close_vote_view.stop()
         if hasattr(self, '_cleanup_task') and self._cleanup_task and not self._cleanup_task.done():
             self._cleanup_task.cancel()
         if hasattr(self, '_auto_close_task') and self._auto_close_task and not self._auto_close_task.done():
@@ -616,10 +684,10 @@ class GameNight(commands.Cog):
                     self.all_voted_notified = True
                     embed = discord.Embed(
                         title="🎉 All votes are in!",
-                        description="Everyone who RSVP'd has voted.\nThe admin can now use `!gn close`.",
-                        color=discord.Color.blue(),
+                        description="Everyone who RSVP'd has voted.\nClick the button below to close voting and see the results!",
+                        color=discord.Color.green(),
                     )
-                    all_voted_msg = await channel.send(embed=embed)
+                    all_voted_msg = await channel.send(embed=embed, view=CloseVoteView(self))
                     await self._track(all_voted_msg)
             else:
                 # Someone new clicked ✅ — reset so the notification fires again when complete.
@@ -740,26 +808,24 @@ class GameNight(commands.Cog):
     async def gn_open(self, ctx):
         await self._do_open_vote(ctx.channel, trigger_message=ctx.message)
 
-    @gamenight.command(name="close")
-    @commands.admin_or_permissions(administrator=True)
-    async def gn_close(self, ctx):
+    async def _do_close_vote(self, channel: discord.TextChannel):
+        """Shared logic for closing a vote session (used by !gn close and the Close Vote button)."""
         self.is_open = False
         await self.config.is_open.set(False)
         self.all_voted_notified = False
         self.too_many_notified = False
         
-        # Remove view from message to prevent further RSVPs
-        channel, msg = await self._get_or_restore_vote_message()
+        # Remove view from vote message to prevent further RSVPs
+        vote_channel, msg = await self._get_or_restore_vote_message()
         if msg:
             try:
                 await msg.edit(view=None)
             except discord.NotFound:
                 pass
                 
-        await self._track(ctx.message)  # Track the !gn close command itself
-        closing_msg = await ctx.send("🛑 **Voting is closed!** calculating results...")
+        closing_msg = await channel.send("🛑 **Voting is closed!** calculating results...")
         await self._track(closing_msg)
-        await self.gn_results(ctx)
+        await self._show_results(channel)
 
         # Schedule cleanup
         delay_hours = await self.config.cleanup_delay_hours()
@@ -782,6 +848,12 @@ class GameNight(commands.Cog):
         if self._smart_reminder_task and not self._smart_reminder_task.done():
             self._smart_reminder_task.cancel()
         await self.config.reminder_time.set(None)
+
+    @gamenight.command(name="close")
+    @commands.admin_or_permissions(administrator=True)
+    async def gn_close(self, ctx):
+        await self._track(ctx.message)  # Track the !gn close command itself
+        await self._do_close_vote(ctx.channel)
 
     @commands.command()
     async def vote(self, ctx, *, games_input: str):
@@ -1142,11 +1214,11 @@ class GameNight(commands.Cog):
         embed.description = desc
         await ctx.send(embed=embed)
 
-    @gamenight.command(name="results")
-    @commands.admin_or_permissions(administrator=True)
-    async def gn_results(self, ctx):
+    async def _show_results(self, channel: discord.abc.Messageable):
+        """Show vote results in the given channel (shared by !gn close, !gn results, and Close Vote button)."""
         if not self.votes:
-            return await ctx.send("No votes received.")
+            await channel.send("No votes received.")
+            return
 
         scores = defaultdict(int)
         vote_counts = defaultdict(int)
@@ -1187,7 +1259,7 @@ class GameNight(commands.Cog):
 
         embed.description = desc
         embed.set_footer(text=f"Total: {len(self.votes)} voters.")
-        results_msg = await ctx.send(embed=embed)
+        results_msg = await channel.send(embed=embed)
         await self._track(results_msg)
 
         # --- TIEBREAKER & SAVE LOGIC ---
@@ -1196,7 +1268,7 @@ class GameNight(commands.Cog):
         if len(potential_winners) > 1:
             await asyncio.sleep(1)
             tie_str = ", ".join(potential_winners)
-            tie_msg = await ctx.send(f"⚠️ **TIE!** Between: {tie_str}.\nSpinning the wheel...")
+            tie_msg = await channel.send(f"⚠️ **TIE!** Between: {tie_str}.\nSpinning the wheel...")
             await self._track(tie_msg)
             await asyncio.sleep(3)
             final_winner = random.choice(potential_winners)
@@ -1206,10 +1278,10 @@ class GameNight(commands.Cog):
                 description=f"The wheel stops on...\n# **🎉 {final_winner} 🎉**",
                 color=discord.Color.red(),
             )
-            tie_result_msg = await ctx.send(embed=embed_tie)
+            tie_result_msg = await channel.send(embed=embed_tie)
             await self._track(tie_result_msg)
         else:
-            winner_msg = await ctx.send(f"🎉 The winner is clear: **{final_winner}**!")
+            winner_msg = await channel.send(f"🎉 The winner is clear: **{final_winner}**!")
             await self._track(winner_msg)
 
         async with self.config.game_wins() as wins:
@@ -1218,6 +1290,11 @@ class GameNight(commands.Cog):
 
         count = await self.config.total_sessions()
         await self.config.total_sessions.set(count + 1)
+
+    @gamenight.command(name="results")
+    @commands.admin_or_permissions(administrator=True)
+    async def gn_results(self, ctx):
+        await self._show_results(ctx.channel)
 
     # ── Auto-Open Loop ──────────────────────────────────────────────────
     @tasks.loop(seconds=30)
