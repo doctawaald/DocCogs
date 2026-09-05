@@ -1021,7 +1021,7 @@ class GameNight(commands.Cog):
         # Immediately check whether this was the last missing voter
         await self.check_completion()
 
-    @commands.command(name="pass", aliases=["skip", "dontcare", "maaktnietuit"])
+    @commands.command(name="pass", aliases=["dontcare", "nopref"])
     async def pass_vote(self, ctx):
         """Register that you are playing but don't care what game is played."""
         if ctx.guild is not None:
@@ -1030,6 +1030,14 @@ class GameNight(commands.Cog):
                 f"{ctx.author.mention}, please send this in a DM! 🤫", delete_after=5
             )
 
+        if not self.is_open:
+            return await ctx.send("⛔ Voting is currently closed.")
+
+        await self._register_pass(ctx)
+
+    @gamenight.command(name="pass", aliases=["dontcare", "nopref"])
+    async def gn_pass_cmd(self, ctx):
+        """Register that you are playing but don't care what game is played."""
         if not self.is_open:
             return await ctx.send("⛔ Voting is currently closed.")
 
