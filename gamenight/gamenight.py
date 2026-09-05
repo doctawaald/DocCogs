@@ -106,7 +106,10 @@ class CloseVoteView(discord.ui.View):
             # Disable the button on the message
             button.disabled = True
             button.label = "Vote Closed ✅"
-            await interaction.message.edit(view=self)
+            try:
+                await interaction.message.edit(view=self)
+            except Exception:
+                pass
 
             # Close the vote using shared logic
             await active_cog._do_close_vote(interaction.channel)
@@ -160,6 +163,8 @@ class GameNight(commands.Cog):
         self.vote_channel = None
         self.all_voted_notified = False
         self.too_many_notified = False  # Track whether the "too many players" warning has been sent
+        self._all_voted_msg: discord.Message | None = None
+        self._close_lock = asyncio.Lock()
 
         # Message tracking for auto-cleanup
         self.tracked_messages: list[discord.Message] = []
@@ -294,7 +299,11 @@ class GameNight(commands.Cog):
                 player_lines = []
                 for uid, t_val in joining_players.items():
                     has_voted = int(uid) in self.votes
-                    status_emoji = "🎮" if has_voted else "❓"
+                    if has_voted:
+                        pos, neg = self.votes[int(uid)]
+                        status_emoji = "🎲" if (not pos and not neg) else "🎮"
+                    else:
+                        status_emoji = "❓"
                     player_lines.append(f"• <@{uid}> - {t_val} {status_emoji}")
                     
                 embed.add_field(
@@ -682,16 +691,33 @@ class GameNight(commands.Cog):
                 # Everyone has voted — send the notification (only once)
                 if not self.all_voted_notified:
                     self.all_voted_notified = True
+
+                    # Clean up old all_voted notification if one was sent previously
+                    if self._all_voted_msg:
+                        try:
+                            await self._all_voted_msg.delete()
+                        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                            pass
+                        self._all_voted_msg = None
+
                     embed = discord.Embed(
                         title="🎉 All votes are in!",
                         description="Everyone who RSVP'd has voted.\nClick the button below to close voting and see the results!",
                         color=discord.Color.green(),
                     )
                     all_voted_msg = await channel.send(embed=embed, view=CloseVoteView(self))
+                    self._all_voted_msg = all_voted_msg
                     await self._track(all_voted_msg)
             else:
-                # Someone new clicked ✅ — reset so the notification fires again when complete.
-                self.all_voted_notified = False
+                # Someone new clicked ✅ or has not voted yet — disable any existing close button
+                if self.all_voted_notified:
+                    self.all_voted_notified = False
+                    if self._all_voted_msg:
+                        try:
+                            await self._all_voted_msg.edit(view=None)
+                        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                            pass
+                        self._all_voted_msg = None
 
         except discord.NotFound:
             pass  # Message was deleted
@@ -735,6 +761,7 @@ class GameNight(commands.Cog):
         self.all_voted_notified = False
         self.too_many_notified = False  # Reset at the start of each new voting round
         self._smart_reminder_sent = False  # Reset for the new session
+        self._all_voted_msg = None
         
         await self.config.is_open.set(True)
         await self.config.votes.set({})
@@ -766,7 +793,7 @@ class GameNight(commands.Cog):
 
         embed = discord.Embed(
             title="🎮 Game Night Voting Open!",
-            description=f"Send me a **DM** with your choices.\nExample: {example}\n\n{rules}{veto_text}",
+            description=f"Send me a **DM** with your choices.\nExample: {example}\nNo preference? Send `!pass` or `!vote pass` 🎲\n\n{rules}{veto_text}",
             color=discord.Color.green(),
         )
         # The RSVP question
@@ -810,48 +837,62 @@ class GameNight(commands.Cog):
 
     async def _do_close_vote(self, channel: discord.TextChannel):
         """Shared logic for closing a vote session (used by !gn close and the Close Vote button)."""
-        self.is_open = False
-        await self.config.is_open.set(False)
-        self.all_voted_notified = False
-        self.too_many_notified = False
-        
-        # Remove view from vote message to prevent further RSVPs
-        vote_channel, msg = await self._get_or_restore_vote_message()
-        if msg:
-            try:
-                await msg.edit(view=None)
-            except discord.NotFound:
-                pass
-                
-        closing_msg = await channel.send("🛑 **Voting is closed!** calculating results...")
-        await self._track(closing_msg)
-        await self._show_results(channel)
+        async with self._close_lock:
+            if not self.is_open:
+                return
 
-        # Schedule cleanup
-        delay_hours = await self.config.cleanup_delay_hours()
-        delay_seconds = delay_hours * 3600
-        cleanup_time = time.time() + delay_seconds
-        await self.config.cleanup_time.set(cleanup_time)
+            self.is_open = False
+            await self.config.is_open.set(False)
+            self.all_voted_notified = False
+            self.too_many_notified = False
 
-        if self._cleanup_task and not self._cleanup_task.done():
-            self._cleanup_task.cancel()
-        self._cleanup_task = asyncio.create_task(self._schedule_cleanup(delay_seconds=delay_seconds))
+            # Remove view from the "all votes in" message if still present
+            if self._all_voted_msg:
+                try:
+                    await self._all_voted_msg.edit(view=None)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    pass
+                self._all_voted_msg = None
+            
+            # Remove view from vote message to prevent further RSVPs
+            vote_channel, msg = await self._get_or_restore_vote_message()
+            if msg:
+                try:
+                    await msg.edit(view=None)
+                except discord.NotFound:
+                    pass
+                    
+            closing_msg = await channel.send("🛑 **Voting is closed!** calculating results...")
+            await self._track(closing_msg)
+            await self._show_results(channel)
 
-        # Cancel auto-close fallback (vote was closed manually, no need for the fallback)
-        if self._auto_close_task and not self._auto_close_task.done():
-            self._auto_close_task.cancel()
-        await self.config.auto_close_time.set(None)
+            # Schedule cleanup
+            delay_hours = await self.config.cleanup_delay_hours()
+            delay_seconds = delay_hours * 3600
+            cleanup_time = time.time() + delay_seconds
+            await self.config.cleanup_time.set(cleanup_time)
 
-        # Cancel voting reminders
-        if self._reminder_task and not self._reminder_task.done():
-            self._reminder_task.cancel()
-        if self._smart_reminder_task and not self._smart_reminder_task.done():
-            self._smart_reminder_task.cancel()
-        await self.config.reminder_time.set(None)
+            if self._cleanup_task and not self._cleanup_task.done():
+                self._cleanup_task.cancel()
+            self._cleanup_task = asyncio.create_task(self._schedule_cleanup(delay_seconds=delay_seconds))
+
+            # Cancel auto-close fallback (vote was closed manually, no need for the fallback)
+            if self._auto_close_task and not self._auto_close_task.done():
+                self._auto_close_task.cancel()
+            await self.config.auto_close_time.set(None)
+
+            # Cancel voting reminders
+            if self._reminder_task and not self._reminder_task.done():
+                self._reminder_task.cancel()
+            if self._smart_reminder_task and not self._smart_reminder_task.done():
+                self._smart_reminder_task.cancel()
+            await self.config.reminder_time.set(None)
 
     @gamenight.command(name="close")
     @commands.admin_or_permissions(administrator=True)
     async def gn_close(self, ctx):
+        if not self.is_open:
+            return await ctx.send("⛔ Voting is already closed.")
         await self._track(ctx.message)  # Track the !gn close command itself
         await self._do_close_vote(ctx.channel)
 
@@ -865,6 +906,15 @@ class GameNight(commands.Cog):
 
         if not self.is_open:
             return await ctx.send("⛔ Voting is currently closed.")
+
+        # Check if player doesn't care / passes on voting
+        pass_keywords = {
+            "pass", "skip", "dontcare", "dont care", "idc", "whatever",
+            "maaktnietuit", "maakt niet uit", "omhetit", "om het even",
+            "geen voorkeur", "alles", "meedoen", "geenvoorkeur"
+        }
+        if games_input.strip().lower() in pass_keywords:
+            return await self._register_pass(ctx)
 
         veto_enabled = await self.config.veto_mode()
         weighted_mode = await self.config.weighted_mode()
@@ -971,6 +1021,47 @@ class GameNight(commands.Cog):
         # Immediately check whether this was the last missing voter
         await self.check_completion()
 
+    @commands.command(name="pass", aliases=["skip", "dontcare", "maaktnietuit"])
+    async def pass_vote(self, ctx):
+        """Register that you are playing but don't care what game is played."""
+        if ctx.guild is not None:
+            await ctx.message.delete(delay=1)
+            return await ctx.send(
+                f"{ctx.author.mention}, please send this in a DM! 🤫", delete_after=5
+            )
+
+        if not self.is_open:
+            return await ctx.send("⛔ Voting is currently closed.")
+
+        await self._register_pass(ctx)
+
+    async def _register_pass(self, ctx):
+        """Helper to register a player as present without voting preferences."""
+        self.votes[ctx.author.id] = ([], None)
+        await self.config.votes.set({str(k): v for k, v in self.votes.items()})
+
+        # Check if the player already RSVP'd
+        players = await self.config.players()
+        has_rsvpd = str(ctx.author.id) in players and players[str(ctx.author.id)] != "No"
+
+        msg = (
+            "🎲 **Je stem staat op 'Maakt niet uit'!**\n"
+            "Je telt mee als aanwezig, maar hebt geen specifieke game gekozen.\n"
+            "We hoeven nu niet meer op jouw stem te wachten. Veel plezier vanavond! 🥳"
+        )
+        if not has_rsvpd:
+            msg += "\n\n⚠️ *Vergeet niet om in het gamenight-kanaal ook je verwachte tijdstip aan te klikken in de dropdown!*"
+        else:
+            msg += "\n\n*(Wil je toch nog stemmen? Stuur dan gewoon alsnog `!vote Game1, Game2`)*"
+
+        await ctx.send(msg)
+
+        # Update the RSVP embed to reflect the player's updated voting status (🎲 emoji)
+        await self._update_rsvp_embed()
+
+        # Immediately check whether this completes all voting
+        await self.check_completion()
+
     @gamenight.command(name="reset")
     @commands.admin_or_permissions(administrator=True)
     async def gn_reset(self, ctx):
@@ -989,6 +1080,13 @@ class GameNight(commands.Cog):
         await self.config.cleanup_time.set(None)
         await self.config.reminder_time.set(None)
         self._smart_reminder_sent = False
+
+        if self._all_voted_msg:
+            try:
+                await self._all_voted_msg.edit(view=None)
+            except Exception:
+                pass
+            self._all_voted_msg = None
         
         if self._cleanup_task and not self._cleanup_task.done():
             self._cleanup_task.cancel()
@@ -1236,10 +1334,22 @@ class GameNight(commands.Cog):
                 scores[neg_game] -= 1
                 veto_counts[neg_game] += 1
 
-        sorted_games = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+        # Sort priority:
+        # 1. Total score (highest points first)
+        # 2. Number of positive voters (e.g. 2x 1pt beats 1x 2pt because more people want it)
+        # 3. Fewest vetoes/downvotes (-veto_counts)
+        sorted_games = sorted(
+            scores.items(),
+            key=lambda item: (item[1], vote_counts[item[0]], -veto_counts[item[0]]),
+            reverse=True
+        )
 
-        highest_score = sorted_games[0][1]
-        potential_winners = [g for g, s in sorted_games if s == highest_score]
+        best_game, best_score = sorted_games[0]
+        best_tuple = (best_score, vote_counts[best_game], -veto_counts[best_game])
+        potential_winners = [
+            g for g, s in sorted_games
+            if (s, vote_counts[g], -veto_counts[g]) == best_tuple
+        ]
 
         embed = discord.Embed(title="🏆 The Results", color=discord.Color.gold())
         desc = ""
@@ -1258,7 +1368,12 @@ class GameNight(commands.Cog):
                 break
 
         embed.description = desc
-        embed.set_footer(text=f"Total: {len(self.votes)} voters.")
+        voted_count = sum(1 for p, n in self.votes.values() if p or n)
+        passed_count = len(self.votes) - voted_count
+        if passed_count > 0:
+            embed.set_footer(text=f"Total: {len(self.votes)} players ({voted_count} voted, {passed_count} 🎲 don't care)")
+        else:
+            embed.set_footer(text=f"Total: {len(self.votes)} voters.")
         results_msg = await channel.send(embed=embed)
         await self._track(results_msg)
 
