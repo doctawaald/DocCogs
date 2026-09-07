@@ -186,6 +186,7 @@ class GameNight(commands.Cog):
             "veto_mode": False,
             "is_open": False,
             "votes": {},
+            "session_result": None,
             "vote_message": None,
             "tracked_messages": [],
             "cleanup_time": None,
@@ -194,6 +195,7 @@ class GameNight(commands.Cog):
             "reminder_delay_hours": 2.0,
             "smart_reminder_offset_minutes": 60,
             "smart_reminder_enabled": True,
+            "smart_reminder_sent": False,
             "players": {},
             "auto_open_enabled": False,
             "auto_open_time": "18:00",
@@ -357,10 +359,16 @@ class GameNight(commands.Cog):
             self._auto_close_task = asyncio.create_task(self._schedule_auto_close(delay_seconds=delay))
 
         reminder_time = await self.config.reminder_time()
-        if reminder_time:
+        if reminder_time and self.is_open and await self.config.reminder_delay_hours() > 0:
             now = time.time()
             delay = max(0, reminder_time - now)
             self._reminder_task = asyncio.create_task(self._schedule_reminder(delay_seconds=delay))
+        else:
+            await self.config.reminder_time.set(None)
+
+        self._smart_reminder_sent = await self.config.smart_reminder_sent()
+        if self.is_open:
+            self._smart_reminder_task = asyncio.create_task(self._restore_smart_reminder())
 
         # Clean up any duplicate RSVPViews/CloseVoteViews from previous reloads
         for view in list(self.bot.persistent_views):
@@ -530,6 +538,13 @@ class GameNight(commands.Cog):
                 
         return earliest
 
+    async def _restore_smart_reminder(self):
+        await self.bot.wait_until_ready()
+        # Rescheduling must not cancel this restoration task itself.
+        if self._smart_reminder_task is asyncio.current_task():
+            self._smart_reminder_task = None
+            await self._reschedule_smart_reminder()
+
     async def _reschedule_smart_reminder(self):
         """(Re)schedule the smart reminder based on the earliest RSVP time minus the configured offset."""
         # Don't reschedule if the smart reminder was already sent this session
@@ -571,8 +586,6 @@ class GameNight(commands.Cog):
         if not self.is_open or self._smart_reminder_sent:
             return
             
-        self._smart_reminder_sent = True
-        
         channel, msg = await self._get_or_restore_vote_message()
         if not channel:
             return
@@ -610,6 +623,8 @@ class GameNight(commands.Cog):
             color=discord.Color.orange(),
         )
         reminder_msg = await channel.send(embed=embed)
+        self._smart_reminder_sent = True
+        await self.config.smart_reminder_sent.set(True)
         await self._track(reminder_msg)
 
     def normalize_game_name(self, user_input):
@@ -765,6 +780,8 @@ class GameNight(commands.Cog):
         
         await self.config.is_open.set(True)
         await self.config.votes.set({})
+        await self.config.session_result.set(None)
+        await self.config.smart_reminder_sent.set(False)
         await self.config.vote_message.set(None)
         await self.config.tracked_messages.set([])
         await self.config.cleanup_time.set(None)
@@ -864,7 +881,7 @@ class GameNight(commands.Cog):
                     
             closing_msg = await channel.send("🛑 **Voting is closed!** calculating results...")
             await self._track(closing_msg)
-            await self._show_results(channel)
+            await self._show_results(channel, finalize=True)
 
             # Schedule cleanup
             delay_hours = await self.config.cleanup_delay_hours()
@@ -1083,6 +1100,8 @@ class GameNight(commands.Cog):
         
         await self.config.is_open.set(False)
         await self.config.votes.set({})
+        await self.config.session_result.set(None)
+        await self.config.smart_reminder_sent.set(False)
         await self.config.vote_message.set(None)
         await self.config.tracked_messages.set([])
         await self.config.cleanup_time.set(None)
@@ -1139,6 +1158,7 @@ class GameNight(commands.Cog):
         # Allow '0' to disable the fixed reminder
         if time_str == "0":
             await self.config.reminder_delay_hours.set(0)
+            await self.config.reminder_time.set(None)
             if self._reminder_task and not self._reminder_task.done():
                 self._reminder_task.cancel()
             return await ctx.send("❌ Fixed reminder is now **disabled**.")
@@ -1197,6 +1217,7 @@ class GameNight(commands.Cog):
         
         if args == "on":
             await self.config.smart_reminder_enabled.set(True)
+            await self._reschedule_smart_reminder()
             return await ctx.send("✅ Smart Reminder is now **ON**.")
         
         if args == "off":
@@ -1320,19 +1341,16 @@ class GameNight(commands.Cog):
         embed.description = desc
         await ctx.send(embed=embed)
 
-    async def _show_results(self, channel: discord.abc.Messageable):
-        """Show vote results in the given channel (shared by !gn close, !gn results, and Close Vote button)."""
-        if not self.votes:
-            await channel.send("No votes received.")
-            return
-
+    def _calculate_result(self, votes, players, weighted_mode):
+        """Build a result without changing votes or history; explicitly absent users are excluded."""
+        eligible_votes = {
+            uid: vote for uid, vote in votes.items()
+            if players.get(str(uid)) != "No"
+        }
         scores = defaultdict(int)
         vote_counts = defaultdict(int)
         veto_counts = defaultdict(int)
-
-        weighted_mode = await self.config.weighted_mode()
-
-        for pos_games, neg_game in self.votes.values():
+        for pos_games, neg_game in eligible_votes.values():
             for i, game in enumerate(pos_games):
                 points = (3 - i) if weighted_mode else 1
                 scores[game] += points
@@ -1352,18 +1370,50 @@ class GameNight(commands.Cog):
             reverse=True
         )
 
-        best_game, best_score = sorted_games[0]
-        best_tuple = (best_score, vote_counts[best_game], -veto_counts[best_game])
-        potential_winners = [
-            g for g, s in sorted_games
-            if (s, vote_counts[g], -veto_counts[g]) == best_tuple
-        ]
+        potential_winners = []
+        if sorted_games:
+            best_game, best_score = sorted_games[0]
+            best_tuple = (best_score, vote_counts[best_game], -veto_counts[best_game])
+            potential_winners = [
+                g for g, s in sorted_games
+                if (s, vote_counts[g], -veto_counts[g]) == best_tuple
+            ]
+        return {
+            "ranking": [[game, score, vote_counts[game], veto_counts[game]]
+                        for game, score in sorted_games],
+            "potential_winners": potential_winners,
+            "winner": None,
+            "total": len(eligible_votes),
+            "voted": sum(1 for p, n in eligible_votes.values() if p or n),
+        }
 
-        embed = discord.Embed(title="🏆 The Results", color=discord.Color.gold())
+    async def _show_results(self, channel: discord.abc.Messageable, *, finalize=False):
+        """Finalize once on close; subsequent requests display the saved result."""
+        # Commit the result and history together before sending Discord messages.
+        # This also serializes concurrent results requests and survives a reload.
+        async with self.config.all() as data:
+            result = data["session_result"]
+            if result is None:
+                result = self._calculate_result(self.votes, data["players"], data["weighted_mode"])
+                if finalize:
+                    candidates = result["potential_winners"]
+                    if candidates:
+                        result["winner"] = random.choice(candidates) if len(candidates) > 1 else candidates[0]
+                        winner = result["winner"]
+                        data["game_wins"][winner] = data["game_wins"].get(winner, 0) + 1
+                        data["total_sessions"] += 1
+                    data["session_result"] = result
+
+        if not result["ranking"]:
+            text = ("🎲 Everyone has no preference. No winning game was selected."
+                    if result["total"] else "No votes received from attending players.")
+            await self._track(await channel.send(text))
+            return
+
+        title = "🏆 The Results" if result["winner"] else "🗳️ Current standings (not final)"
+        embed = discord.Embed(title=title, color=discord.Color.gold())
         desc = ""
-        for i, (game, score) in enumerate(sorted_games, 1):
-            pos_votes = vote_counts[game]
-            neg_votes = veto_counts[game]
+        for i, (game, score, pos_votes, neg_votes) in enumerate(result["ranking"], 1):
 
             emoji = ["🥇", "🥈", "🥉"][i - 1] if i <= 3 else f"**#{i}**"
 
@@ -1376,26 +1426,20 @@ class GameNight(commands.Cog):
                 break
 
         embed.description = desc
-        voted_count = sum(1 for p, n in self.votes.values() if p or n)
-        passed_count = len(self.votes) - voted_count
+        voted_count = result["voted"]
+        total = result["total"]
+        passed_count = total - voted_count
         if passed_count > 0:
-            embed.set_footer(text=f"Total: {len(self.votes)} players ({voted_count} voted, {passed_count} 🎲 don't care)")
+            embed.set_footer(text=f"Total: {total} players ({voted_count} voted, {passed_count} 🎲 don't care)")
         else:
-            embed.set_footer(text=f"Total: {len(self.votes)} voters.")
+            embed.set_footer(text=f"Total: {total} voters.")
         results_msg = await channel.send(embed=embed)
         await self._track(results_msg)
 
-        # --- TIEBREAKER & SAVE LOGIC ---
-        final_winner = potential_winners[0]
-
-        if len(potential_winners) > 1:
-            await asyncio.sleep(1)
-            tie_str = ", ".join(potential_winners)
-            tie_msg = await channel.send(f"⚠️ **TIE!** Between: {tie_str}.\nSpinning the wheel...")
-            await self._track(tie_msg)
-            await asyncio.sleep(3)
-            final_winner = random.choice(potential_winners)
-
+        final_winner = result["winner"]
+        if final_winner is None:
+            return
+        if len(result["potential_winners"]) > 1:
             embed_tie = discord.Embed(
                 title="🎰 SUDDEN DEATH",
                 description=f"The wheel stops on...\n# **🎉 {final_winner} 🎉**",
@@ -1406,13 +1450,6 @@ class GameNight(commands.Cog):
         else:
             winner_msg = await channel.send(f"🎉 The winner is clear: **{final_winner}**!")
             await self._track(winner_msg)
-
-        async with self.config.game_wins() as wins:
-            current = wins.get(final_winner, 0)
-            wins[final_winner] = current + 1
-
-        count = await self.config.total_sessions()
-        await self.config.total_sessions.set(count + 1)
 
     @gamenight.command(name="results")
     @commands.admin_or_permissions(administrator=True)
