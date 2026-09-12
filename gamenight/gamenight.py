@@ -7,9 +7,12 @@ import difflib
 import asyncio
 import random
 import time
+import logging
 from datetime import datetime, timedelta, timezone
 
 from .games import GAMES  # Separate game list
+
+log = logging.getLogger("red.gamenight")
 
 class RSVPView(discord.ui.View):
     def __init__(self, cog):
@@ -34,7 +37,8 @@ class RSVPView(discord.ui.View):
     )
     async def rsvp_select(self, interaction: discord.Interaction, select: discord.ui.Select):
         try:
-            val = select.values[0]
+            # Select instances are shared; use this click's own payload.
+            val = interaction.data["values"][0]
             # Determine the correct cog to handle this interaction.
             # If this view is a zombie from a previous reload, forward to the active cog.
             active_cog = self.cog.bot.get_cog("GameNight")
@@ -50,6 +54,7 @@ class RSVPView(discord.ui.View):
             pass  # Already responded — safe to ignore
         except Exception as e:
             # Catch-all: make sure Discord always gets a response to avoid "interaction failed"
+            log.exception("RSVP callback failed (interaction=%s)", interaction.id)
             try:
                 if not interaction.response.is_done():
                     await interaction.response.send_message(
@@ -165,6 +170,7 @@ class GameNight(commands.Cog):
         self.too_many_notified = False  # Track whether the "too many players" warning has been sent
         self._all_voted_msg: discord.Message | None = None
         self._close_lock = asyncio.Lock()
+        self._rsvp_embed_lock = asyncio.Lock()
 
         # Message tracking for auto-cleanup
         self.tracked_messages: list[discord.Message] = []
@@ -235,14 +241,25 @@ class GameNight(commands.Cog):
             return None, None
 
     async def handle_rsvp(self, interaction: discord.Interaction, time_val: str):
-        # Defer immediately to satisfy Discord's 3-second response window.
-        # Guard with is_done() in case another view instance already deferred this interaction.
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=True)
+        # A failed/expired acknowledgement must not discard the user's selection.
+        acknowledged = interaction.response.is_done()
+        if not acknowledged:
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=True)
+                acknowledged = True
+            except discord.InteractionResponded:
+                acknowledged = True
+            except (discord.HTTPException, asyncio.TimeoutError):
+                log.exception("RSVP acknowledgement failed (interaction=%s, age=%.2fs)",
+                              interaction.id,
+                              (datetime.now(timezone.utc) - interaction.created_at).total_seconds())
 
+        saved = False
         try:
             if not self.is_open:
-                return await interaction.followup.send("Voting is currently closed.", ephemeral=True)
+                if acknowledged:
+                    await interaction.edit_original_response(content="Voting is currently closed.")
+                return
                 
             async with self.config.players() as players:
                 players[str(interaction.user.id)] = time_val
@@ -251,8 +268,13 @@ class GameNight(commands.Cog):
                 else:
                     msg = f"✅ You are marked as playing at **{time_val}**!"
                     
-            # Send ephemeral confirmation as a followup response
-            await interaction.followup.send(msg, ephemeral=True)
+            saved = True
+            # Confirmation delivery and public UI updates are independent of storage.
+            if acknowledged:
+                try:
+                    await interaction.edit_original_response(content=msg)
+                except (discord.HTTPException, asyncio.TimeoutError):
+                    log.exception("RSVP saved but confirmation failed (interaction=%s)", interaction.id)
             
             # Update the embed
             await self._update_rsvp_embed()
@@ -265,15 +287,23 @@ class GameNight(commands.Cog):
         except discord.errors.InteractionResponded:
             pass  # Already handled — safe to ignore
         except Exception as e:
+            log.exception("RSVP processing failed (interaction=%s, saved=%s)", interaction.id, saved)
             # Last resort: make sure the user gets feedback
             try:
                 await interaction.followup.send(
-                    "⚠️ Something went wrong processing your RSVP. Please try again.", ephemeral=True
+                    ("⚠️ Your RSVP was saved, but the display could not be updated."
+                     if saved else "⚠️ Your RSVP could not be saved. Please try again."), ephemeral=True
                 )
             except Exception:
                 pass
 
     async def _update_rsvp_embed(self):
+        # Read current players only after earlier edits finish, so a slow edit
+        # cannot overwrite a newer player's selection with an older snapshot.
+        async with self._rsvp_embed_lock:
+            await self._edit_rsvp_embed()
+
+    async def _edit_rsvp_embed(self):
         channel, msg = await self._get_or_restore_vote_message()
         if not channel or not msg:
             return
@@ -282,7 +312,7 @@ class GameNight(commands.Cog):
             if not msg.embeds:
                 return
                 
-            embed = msg.embeds[0]
+            embed = msg.embeds[0].copy()
             players = await self.config.players()
             
             # Rebuild the fields
@@ -326,9 +356,9 @@ class GameNight(commands.Cog):
                     inline=False
                 )
                 
-            await msg.edit(embed=embed)
+            self.vote_message = await msg.edit(embed=embed)
         except Exception as e:
-            pass
+            log.exception("Could not update RSVP message")
 
     async def cog_load(self):
         """Restore state from config when the bot reboots."""
