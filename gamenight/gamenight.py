@@ -193,6 +193,9 @@ class GameNight(commands.Cog):
             "is_open": False,
             "votes": {},
             "session_result": None,
+            "skip_history": {},
+            "skip_limit": 2,
+            "session_skip_users": [],
             "vote_message": None,
             "tracked_messages": [],
             "cleanup_time": None,
@@ -314,6 +317,11 @@ class GameNight(commands.Cog):
                 
             embed = msg.embeds[0].copy()
             players = await self.config.players()
+            limit = await self.config.skip_limit()
+            rule = ("Skipping: unlimited." if limit is None else
+                    f"Skipping: max {limit} sessions per calendar month.")
+            if embed.description:
+                embed.description = re.sub(r"Skipping: [^\n]*", rule, embed.description)
             
             # Rebuild the fields
             embed.clear_fields()
@@ -811,6 +819,7 @@ class GameNight(commands.Cog):
         await self.config.is_open.set(True)
         await self.config.votes.set({})
         await self.config.session_result.set(None)
+        await self.config.session_skip_users.set([])
         await self.config.smart_reminder_sent.set(False)
         await self.config.vote_message.set(None)
         await self.config.tracked_messages.set([])
@@ -828,6 +837,9 @@ class GameNight(commands.Cog):
 
         weighted = await self.config.weighted_mode()
         veto = await self.config.veto_mode()
+        skip_limit = await self.config.skip_limit()
+        skip_rule = ("Skipping: unlimited." if skip_limit is None else
+                     f"Skipping: max {skip_limit} sessions per calendar month.")
 
         rules = "🥇 3 pts | 🥈 2 pts | 🥉 1 pt" if weighted else "Every positive vote is 1 point."
 
@@ -840,7 +852,7 @@ class GameNight(commands.Cog):
 
         embed = discord.Embed(
             title="🎮 Game Night Voting Open!",
-            description=f"Send me a **DM** with your choices.\nExample: {example}\nNo preference? Send `!pass` or `!vote pass` 🎲\n\n{rules}{veto_text}",
+            description=f"Send me a **DM** with your choices.\nExample: {example}\nNo preference? Send `!pass` or `!vote pass` 🎲\n{skip_rule}\n\n{rules}{veto_text}",
             color=discord.Color.green(),
         )
         # The RSVP question
@@ -1090,10 +1102,54 @@ class GameNight(commands.Cog):
 
         await self._register_pass(ctx)
 
+    @gamenight.command(name="skiplimit")
+    @commands.is_owner()
+    async def gn_skiplimit(self, ctx, value: str = None):
+        """Owner only: show/set monthly skips. Use a number, 0 to block, or off for unlimited."""
+        if value is not None:
+            value = value.strip().lower()
+            if value == "off":
+                limit = None
+            elif value.isascii() and value.isdigit() and len(value) <= 6:
+                limit = int(value)
+            else:
+                return await ctx.send("❌ Use `!gn skiplimit <number>` (0–999999), or `!gn skiplimit off` for unlimited skips.")
+            await self.config.skip_limit.set(limit)
+        limit = await self.config.skip_limit()
+        status = "unlimited" if limit is None else f"{limit} per player per calendar month"
+        await ctx.send(f"🎲 Skip limit: **{status}**. Saved across reboots. Previous skips still count; an accepted skip in the current session remains valid.")
+        if value is not None:
+            await self._update_rsvp_embed()
+
+    def _skip_rejection(self, history, today, limit=2):
+        """Use the same local calendar as the game-night scheduler."""
+        dates = [datetime.fromisoformat(value).date() for value in history]
+        if limit is not None and sum(d.year == today.year and d.month == today.month for d in dates) >= limit:
+            return f"⛔ Your monthly skip limit is {limit} and has been reached. Please vote for a game."
+        return None
+
     async def _register_pass(self, ctx):
         """Helper to register a player as present without voting preferences."""
-        self.votes[ctx.author.id] = ([], None)
-        await self.config.votes.set({str(k): v for k, v in self.votes.items()})
+        if not self.is_open:
+            return await ctx.send("⛔ Voting is currently closed.")
+        uid = str(ctx.author.id)
+        today = datetime.now().date()
+        rejection = None
+        # Check and consume quota together, including repeated/concurrent commands.
+        async with self.config.all() as data:
+            limit = data["skip_limit"]
+            history = data["skip_history"].setdefault(uid, [])
+            if uid not in data["session_skip_users"]:
+                rejection = self._skip_rejection(history, today, limit)
+                if rejection is None:
+                    history.append(today.isoformat())
+                    data["session_skip_users"].append(uid)
+            if rejection is None:
+                self.votes[ctx.author.id] = ([], None)
+                data["votes"] = {str(k): v for k, v in self.votes.items()}
+            used = sum(value[:7] == today.strftime("%Y-%m") for value in history)
+        if rejection:
+            return await ctx.send(rejection)
 
         # Check if the player already RSVP'd
         players = await self.config.players()
@@ -1104,6 +1160,8 @@ class GameNight(commands.Cog):
             "You are counted as attending, but haven't voted for specific games.\n"
             "We won't have to wait for your vote anymore. Have fun tonight! 🥳"
         )
+        allowance = "unlimited" if limit is None else str(limit)
+        msg += f"\n\nSkips used this month: **{used}/{allowance}**. Changing your vote does not refund a skip."
         if not has_rsvpd:
             msg += "\n\n⚠️ *Don't forget to select your expected arrival time in the gamenight channel dropdown!*"
         else:
@@ -1131,6 +1189,7 @@ class GameNight(commands.Cog):
         await self.config.is_open.set(False)
         await self.config.votes.set({})
         await self.config.session_result.set(None)
+        await self.config.session_skip_users.set([])
         await self.config.smart_reminder_sent.set(False)
         await self.config.vote_message.set(None)
         await self.config.tracked_messages.set([])
