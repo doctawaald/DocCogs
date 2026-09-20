@@ -196,6 +196,10 @@ class GameNight(commands.Cog):
             "skip_history": {},
             "skip_limit": 2,
             "session_skip_users": [],
+            "penalty_session": None,
+            "penalty_warnings": {},
+            "veto_penalties": {},
+            "active_veto_penalties": [],
             "vote_message": None,
             "tracked_messages": [],
             "cleanup_time": None,
@@ -272,10 +276,13 @@ class GameNight(commands.Cog):
                     msg = f"✅ You are marked as playing at **{time_val}**!"
                     
             saved = True
+            penalty_embed = None
+            if time_val != "No" and str(interaction.user.id) in await self.config.active_veto_penalties():
+                penalty_embed = self._veto_blocked_embed()
             # Confirmation delivery and public UI updates are independent of storage.
             if acknowledged:
                 try:
-                    await interaction.edit_original_response(content=msg)
+                    await interaction.edit_original_response(content=msg, embed=penalty_embed)
                 except (discord.HTTPException, asyncio.TimeoutError):
                     log.exception("RSVP saved but confirmation failed (interaction=%s)", interaction.id)
             
@@ -328,6 +335,13 @@ class GameNight(commands.Cog):
             embed.add_field(
                 name="Are you gaming tonight?",
                 value="Select your expected time in the dropdown below.\nSelect ❌ if you can't make it.",
+                inline=False,
+            )
+            embed.add_field(
+                name="⚠️ Vote deadline & veto penalty",
+                value=("Vote by **10 minutes before the earliest start**. Watch for your warning and exact deadline.\n"
+                       "Missing it means **no negative vote next game night you attend**. Positive votes stay available.\n"
+                       "An accepted `!pass` counts. No automatic skip is charged."),
                 inline=False,
             )
             
@@ -440,6 +454,7 @@ class GameNight(commands.Cog):
 
         # Start the auto-open background loop
         self._auto_open_loop.start()
+        self._penalty_loop.start()
 
     def cog_unload(self):
         """Clean up active persistent views and running tasks on cog unload."""
@@ -457,6 +472,8 @@ class GameNight(commands.Cog):
             self._smart_reminder_task.cancel()
         if self._auto_open_loop.is_running():
             self._auto_open_loop.cancel()
+        if self._penalty_loop.is_running():
+            self._penalty_loop.cancel()
 
     async def _track(self, msg: discord.Message):
         """Register a message for the post-session cleanup."""
@@ -507,6 +524,7 @@ class GameNight(commands.Cog):
         await self.config.reminder_time.set(None)
 
         # Clean up all tracked messages
+        await self._finish_veto_penalties(channel)
         await self._do_cleanup()
 
     async def _do_cleanup(self):
@@ -665,6 +683,123 @@ class GameNight(commands.Cog):
         await self.config.smart_reminder_sent.set(True)
         await self._track(reminder_msg)
 
+    def _veto_blocked_embed(self):
+        return discord.Embed(
+            title="🔒 No negative vote this game night",
+            description=("You missed a voting deadline on a previous game night.\n\n"
+                         "**You can still vote for games:** `!vote Fortnite, Minecraft`\n"
+                         "Your `# Game` negative vote is unavailable this session. "
+                         "Remove it and send your vote again.\n\n"
+                         "Your veto returns after this session if you attend, unless you miss another deadline."),
+            color=discord.Color.red(),
+        )
+
+    async def _finish_veto_penalties(self, channel):
+        """Serve a penalty only during a later session in which the user attends."""
+        restored = []
+        async with self.config.all() as data:
+            for uid in data["active_veto_penalties"]:
+                attending = data["players"].get(uid) != "No" and (
+                    uid in data["players"] or uid in data["votes"])
+                if attending and data["veto_penalties"].get(uid) != data["penalty_session"]:
+                    if uid in data["veto_penalties"]:
+                        del data["veto_penalties"][uid]
+                        restored.append(uid)
+            data["active_veto_penalties"] = []
+        if restored and channel:
+            embed = discord.Embed(
+                title="✅ Veto restored",
+                description=("Your one-session penalty is complete. You may use a negative vote "
+                             "again next game night, when veto mode is enabled."),
+                color=discord.Color.green(),
+            )
+            try:
+                await self._track(await channel.send(
+                    content=" ".join(f"<@{uid}>" for uid in restored), embed=embed,
+                    allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False)))
+            except discord.HTTPException:
+                log.exception("Could not announce restored veto rights")
+
+    @tasks.loop(seconds=30)
+    async def _penalty_loop(self):
+        try:
+            async with self._close_lock:
+                await self._check_vote_deadlines()
+        except Exception:
+            log.exception("Vote deadline check failed")
+
+    @_penalty_loop.before_loop
+    async def _before_penalty_loop(self):
+        await self.bot.wait_until_ready()
+
+    async def _check_vote_deadlines(self):
+        if not self.is_open:
+            return
+        channel, message = await self._get_or_restore_vote_message()
+        if not channel:
+            return
+        data = await self.config.all()
+        # Existing sessions from before this feature are not punished retroactively.
+        if not data["penalty_session"]:
+            return
+        players = data["players"]
+        earliest = self._get_earliest_rsvp_datetime(players)
+        if earliest is None:
+            return
+        # Keep clock-only RSVPs anchored to the day this session opened, including after reboot.
+        opened = datetime.fromtimestamp(int(data["penalty_session"]) / 1_000_000_000)
+        earliest = earliest.replace(year=opened.year, month=opened.month, day=opened.day)
+        now = time.time()
+        if now < earliest.timestamp() - 30 * 60:
+            return
+        for uid, eta in players.items():
+            if eta == "No" or int(uid) in self.votes:
+                continue
+            if data["veto_penalties"].get(uid) == data["penalty_session"]:
+                continue
+            warning = data["penalty_warnings"].get(uid)
+            target = earliest.timestamp() - 10 * 60
+            # Never bring a previously announced deadline forward. Moving the start
+            # later extends it and triggers an updated warning.
+            if warning is None or target > warning:
+                deadline = max(target, now + 10 * 60)
+                embed = discord.Embed(
+                    title="⚠️ Vote now — your next veto is at risk",
+                    description=(f"You are marked as attending, but have **not voted**.\n\n"
+                                 f"**Your deadline: <t:{int(deadline)}:t> (<t:{int(deadline)}:R>)**\n"
+                                 f"Earliest start: <t:{int(earliest.timestamp())}:t>.\n\n"
+                                 "Send a DM: `!vote Fortnite, Minecraft`. An accepted `!pass` also counts, "
+                                 "within your monthly limit. If you cannot attend, select **Not joining today**.\n\n"
+                                 "**Still no vote at the deadline?** You lose your negative vote (`# Game`) "
+                                 "on the **next game night you attend**. Positive votes remain available. "
+                                 "No automatic skip is charged."),
+                    color=discord.Color.orange(),
+                )
+                sent = await channel.send(content=f"<@{uid}>", embed=embed,
+                                          allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+                async with self.config.penalty_warnings() as warnings:
+                    warnings[uid] = deadline
+                await self._track(sent)
+            elif now >= warning:
+                # Recheck after any network awaits; a vote or withdrawal wins the race.
+                async with self.config.all() as current:
+                    if (not self.is_open or current["players"].get(uid) == "No"
+                            or int(uid) in self.votes):
+                        continue
+                    current["veto_penalties"][uid] = current["penalty_session"]
+                embed = discord.Embed(
+                    title="🔒 Deadline missed — next veto suspended",
+                    description=("You were marked as attending and did not vote before your warned deadline.\n\n"
+                                 "**Next game night you attend: no negative vote (`# Game`).**\n"
+                                 "You can still play and vote positively. Your veto returns after that session "
+                                 "unless you miss another deadline.\n\n"
+                                 "You may still submit a vote tonight, but this does not cancel the penalty. "
+                                 "**No skip was deducted.**"),
+                    color=discord.Color.red(),
+                )
+                await self._track(await channel.send(content=f"<@{uid}>", embed=embed,
+                    allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False)))
+
     def normalize_game_name(self, user_input):
         clean_input = user_input.strip().lower()
         if not clean_input:
@@ -809,6 +944,11 @@ class GameNight(commands.Cog):
         trigger_message : discord.Message, optional
             The command message that triggered the open (tracked for cleanup).
         """
+        await self._finish_veto_penalties(channel)
+        async with self.config.all() as data:
+            data["penalty_session"] = str(time.time_ns())
+            data["penalty_warnings"] = {}
+            data["active_veto_penalties"] = list(data["veto_penalties"])
         self.is_open = True
         self.votes.clear()
         self.all_voted_notified = False
@@ -859,6 +999,14 @@ class GameNight(commands.Cog):
         embed.add_field(
             name="Are you gaming tonight?",
             value="Select your expected time in the dropdown below.\nSelect ❌ if you can't make it.",
+            inline=False,
+        )
+        embed.add_field(
+            name="⚠️ Vote on time — protect your veto",
+            value=("Joining? Vote before **10 minutes before the earliest start time**.\n"
+                   "A warning is sent 30 minutes before the start. Late arrivals get at least 10 minutes after their warning.\n"
+                   "No vote by your deadline? You lose your **negative vote next game night you attend**. "
+                   "Positive votes remain available. An accepted `!pass` counts; no automatic skip is charged."),
             inline=False,
         )
 
@@ -924,6 +1072,7 @@ class GameNight(commands.Cog):
             closing_msg = await channel.send("🛑 **Voting is closed!** calculating results...")
             await self._track(closing_msg)
             await self._show_results(channel, finalize=True)
+            await self._finish_veto_penalties(channel)
 
             # Schedule cleanup
             delay_hours = await self.config.cleanup_delay_hours()
@@ -984,6 +1133,8 @@ class GameNight(commands.Cog):
         if "#" in games_input:
             if not veto_enabled:
                 return await ctx.send("⛔ Veto mode is disabled. You cannot use `#` today.")
+            if str(ctx.author.id) in await self.config.active_veto_penalties():
+                return await ctx.send(embed=self._veto_blocked_embed())
 
             parts = games_input.split("#", 1)
             pos_input = parts[0]
@@ -1180,6 +1331,10 @@ class GameNight(commands.Cog):
     async def gn_reset(self, ctx):
         """Reset the current voting session completely."""
         self.is_open = False
+        # Reset cancels a session; it must not count as serving a veto penalty.
+        await self.config.active_veto_penalties.set([])
+        await self.config.penalty_warnings.set({})
+        await self.config.penalty_session.set(None)
         self.votes.clear()
         self.vote_message = None
         self.vote_channel = None
