@@ -8,6 +8,7 @@ import asyncio
 import random
 import time
 import logging
+import json
 from datetime import datetime, timedelta, timezone
 
 from .games import GAMES  # Separate game list
@@ -192,9 +193,8 @@ class GameNight(commands.Cog):
             "veto_mode": False,
             "is_open": False,
             "votes": {},
-            # Redbot's Config.all() recursively merges dictionaries. This default
-            # must also be a dict once a result has been saved as a dict.
-            "session_result": {},
+            # Keep this a scalar in Redbot Config; results are JSON strings.
+            "session_result": None,
             "skip_history": {},
             "skip_limit": 2,
             "session_skip_users": [],
@@ -386,6 +386,11 @@ class GameNight(commands.Cog):
 
     async def cog_load(self):
         """Restore state from config when the bot reboots."""
+        # Older releases stored a dict under a key registered as None. Convert it
+        # before Config.all() attempts Redbot's recursive default merge.
+        legacy_result = await self.config.session_result()
+        if isinstance(legacy_result, dict):
+            await self.config.session_result.set(json.dumps(legacy_result) if legacy_result else None)
         self.is_open = await self.config.is_open()
         
         raw_votes = await self.config.votes()
@@ -963,7 +968,7 @@ class GameNight(commands.Cog):
         
         await self.config.is_open.set(True)
         await self.config.votes.set({})
-        await self.config.session_result.set({})
+        await self.config.session_result.set(None)
         await self.config.session_skip_users.set([])
         await self.config.smart_reminder_sent.set(False)
         await self.config.vote_message.set(None)
@@ -1353,7 +1358,7 @@ class GameNight(commands.Cog):
         
         await self.config.is_open.set(False)
         await self.config.votes.set({})
-        await self.config.session_result.set({})
+        await self.config.session_result.set(None)
         await self.config.session_skip_users.set([])
         await self.config.smart_reminder_sent.set(False)
         await self.config.vote_message.set(None)
@@ -1646,7 +1651,8 @@ class GameNight(commands.Cog):
         # Commit the result and history together before sending Discord messages.
         # This also serializes concurrent results requests and survives a reload.
         async with self.config.all() as data:
-            result = data["session_result"]
+            saved_result = data["session_result"]
+            result = json.loads(saved_result) if saved_result else None
             if not result:
                 result = self._calculate_result(self.votes, data["players"], data["weighted_mode"],
                                                 data["active_veto_penalties"])
@@ -1657,7 +1663,7 @@ class GameNight(commands.Cog):
                         winner = result["winner"]
                         data["game_wins"][winner] = data["game_wins"].get(winner, 0) + 1
                         data["total_sessions"] += 1
-                    data["session_result"] = result
+                    data["session_result"] = json.dumps(result)
 
         if not result["ranking"]:
             text = ("🎲 Everyone has no preference. No winning game was selected."
