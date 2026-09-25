@@ -340,7 +340,7 @@ class GameNight(commands.Cog):
             embed.add_field(
                 name="⚠️ Vote deadline & veto penalty",
                 value=("Vote by **10 minutes before the earliest start**. Watch for your warning and exact deadline.\n"
-                       "Missing it means **no negative vote next game night you attend**. Positive votes stay available.\n"
+                       "Missing it means **no negative vote** and a **2-point first choice** next game night you attend.\n"
                        "An accepted `!pass` counts. No automatic skip is charged."),
                 inline=False,
             )
@@ -685,12 +685,13 @@ class GameNight(commands.Cog):
 
     def _veto_blocked_embed(self):
         return discord.Embed(
-            title="🔒 No negative vote this game night",
+            title="🔒 Voting penalty this game night",
             description=("You missed a voting deadline on a previous game night.\n\n"
                          "**You can still vote for games:** `!vote Fortnite, Minecraft`\n"
                          "Your `# Game` negative vote is unavailable this session. "
                          "Remove it and send your vote again.\n\n"
-                         "Your veto returns after this session if you attend, unless you miss another deadline."),
+                         "In weighted mode, your first choice counts for **2 instead of 3 points**. "
+                         "The penalty ends after this session if you attend, unless you miss another deadline."),
             color=discord.Color.red(),
         )
 
@@ -708,9 +709,9 @@ class GameNight(commands.Cog):
             data["active_veto_penalties"] = []
         if restored and channel:
             embed = discord.Embed(
-                title="✅ Veto restored",
-                description=("Your one-session penalty is complete. You may use a negative vote "
-                             "again next game night, when veto mode is enabled."),
+                title="✅ Voting penalty complete",
+                description=("Your one-session penalty is complete. Next game night you may use a negative vote "
+                             "again when veto mode is enabled, and your first choice is worth 3 points in weighted mode."),
                 color=discord.Color.green(),
             )
             try:
@@ -770,8 +771,9 @@ class GameNight(commands.Cog):
                                  f"Earliest start: <t:{int(earliest.timestamp())}:t>.\n\n"
                                  "Send a DM: `!vote Fortnite, Minecraft`. An accepted `!pass` also counts, "
                                  "within your monthly limit. If you cannot attend, select **Not joining today**.\n\n"
-                                 "**Still no vote at the deadline?** You lose your negative vote (`# Game`) "
-                                 "on the **next game night you attend**. Positive votes remain available. "
+                                 "**Still no vote at the deadline?** On the **next game night you attend**, "
+                                 "you lose your negative vote (`# Game`) and your first choice counts for "
+                                 "**2 instead of 3 points** in weighted mode. "
                                  "No automatic skip is charged."),
                     color=discord.Color.orange(),
                 )
@@ -788,10 +790,11 @@ class GameNight(commands.Cog):
                         continue
                     current["veto_penalties"][uid] = current["penalty_session"]
                 embed = discord.Embed(
-                    title="🔒 Deadline missed — next veto suspended",
+                    title="🔒 Deadline missed — next vote penalized",
                     description=("You were marked as attending and did not vote before your warned deadline.\n\n"
-                                 "**Next game night you attend: no negative vote (`# Game`).**\n"
-                                 "You can still play and vote positively. Your veto returns after that session "
+                                 "**Next game night you attend: no negative vote (`# Game`), and your first "
+                                 "choice is worth 2 instead of 3 points in weighted mode.**\n"
+                                 "You can still play and vote positively. The penalty ends after that session "
                                  "unless you miss another deadline.\n\n"
                                  "You may still submit a vote tonight, but this does not cancel the penalty. "
                                  "**No skip was deducted.**"),
@@ -1005,8 +1008,9 @@ class GameNight(commands.Cog):
             name="⚠️ Vote on time — protect your veto",
             value=("Joining? Vote before **10 minutes before the earliest start time**.\n"
                    "A warning is sent 30 minutes before the start. Late arrivals get at least 10 minutes after their warning.\n"
-                   "No vote by your deadline? You lose your **negative vote next game night you attend**. "
-                   "Positive votes remain available. An accepted `!pass` counts; no automatic skip is charged."),
+                   "No vote by your deadline? Next game night you attend, you lose your **negative vote** "
+                   "and your first choice counts for **2 instead of 3 points** in weighted mode. "
+                   "An accepted `!pass` counts; no automatic skip is charged."),
             inline=False,
         )
 
@@ -1126,6 +1130,7 @@ class GameNight(commands.Cog):
 
         veto_enabled = await self.config.veto_mode()
         weighted_mode = await self.config.weighted_mode()
+        penalized = str(ctx.author.id) in await self.config.active_veto_penalties()
 
         pos_input = games_input
         neg_input = None
@@ -1133,7 +1138,7 @@ class GameNight(commands.Cog):
         if "#" in games_input:
             if not veto_enabled:
                 return await ctx.send("⛔ Veto mode is disabled. You cannot use `#` today.")
-            if str(ctx.author.id) in await self.config.active_veto_penalties():
+            if penalized:
                 return await ctx.send(embed=self._veto_blocked_embed())
 
             parts = games_input.split("#", 1)
@@ -1183,13 +1188,16 @@ class GameNight(commands.Cog):
         msg += "**Your list:**\n"
         for i, game in enumerate(clean_pos_games):
             if weighted_mode:
-                points = 3 - i
+                points = 2 if penalized and i == 0 else 3 - i
                 msg += f"#{i+1} **{game}** (+{points} pts)\n"
             else:
                 msg += f"- **{game}** (+1 pt)\n"
 
         if clean_neg_game:
             msg += f"💀 **{clean_neg_game}** (-1 pt)\n"
+        if penalized:
+            msg += ("\n🔒 **Voting penalty active:** no negative vote; "
+                    "your first choice is worth 2 instead of 3 points in weighted mode.\n")
 
         # ── Personal warning: flag games that don't fit the current group size ──
         player_count = await self._get_rsvp_count()
@@ -1585,7 +1593,7 @@ class GameNight(commands.Cog):
         embed.description = desc
         await ctx.send(embed=embed)
 
-    def _calculate_result(self, votes, players, weighted_mode):
+    def _calculate_result(self, votes, players, weighted_mode, penalized_users=()):
         """Build a result without changing votes or history; explicitly absent users are excluded."""
         eligible_votes = {
             uid: vote for uid, vote in votes.items()
@@ -1594,13 +1602,13 @@ class GameNight(commands.Cog):
         scores = defaultdict(int)
         vote_counts = defaultdict(int)
         veto_counts = defaultdict(int)
-        for pos_games, neg_game in eligible_votes.values():
+        for uid, (pos_games, neg_game) in eligible_votes.items():
             for i, game in enumerate(pos_games):
-                points = (3 - i) if weighted_mode else 1
+                points = (2 if i == 0 and str(uid) in penalized_users else 3 - i) if weighted_mode else 1
                 scores[game] += points
                 vote_counts[game] += 1
 
-            if neg_game:
+            if neg_game and str(uid) not in penalized_users:
                 scores[neg_game] -= 1
                 veto_counts[neg_game] += 1
 
@@ -1638,7 +1646,8 @@ class GameNight(commands.Cog):
         async with self.config.all() as data:
             result = data["session_result"]
             if result is None:
-                result = self._calculate_result(self.votes, data["players"], data["weighted_mode"])
+                result = self._calculate_result(self.votes, data["players"], data["weighted_mode"],
+                                                data["active_veto_penalties"])
                 if finalize:
                     candidates = result["potential_winners"]
                     if candidates:
