@@ -192,7 +192,9 @@ class GameNight(commands.Cog):
             "veto_mode": False,
             "is_open": False,
             "votes": {},
-            "session_result": None,
+            # Redbot's Config.all() recursively merges dictionaries. This default
+            # must also be a dict once a result has been saved as a dict.
+            "session_result": {},
             "skip_history": {},
             "skip_limit": 2,
             "session_skip_users": [],
@@ -961,7 +963,7 @@ class GameNight(commands.Cog):
         
         await self.config.is_open.set(True)
         await self.config.votes.set({})
-        await self.config.session_result.set(None)
+        await self.config.session_result.set({})
         await self.config.session_skip_users.set([])
         await self.config.smart_reminder_sent.set(False)
         await self.config.vote_message.set(None)
@@ -1351,7 +1353,7 @@ class GameNight(commands.Cog):
         
         await self.config.is_open.set(False)
         await self.config.votes.set({})
-        await self.config.session_result.set(None)
+        await self.config.session_result.set({})
         await self.config.session_skip_users.set([])
         await self.config.smart_reminder_sent.set(False)
         await self.config.vote_message.set(None)
@@ -1645,7 +1647,7 @@ class GameNight(commands.Cog):
         # This also serializes concurrent results requests and survives a reload.
         async with self.config.all() as data:
             result = data["session_result"]
-            if result is None:
+            if not result:
                 result = self._calculate_result(self.votes, data["players"], data["weighted_mode"],
                                                 data["active_veto_penalties"])
                 if finalize:
