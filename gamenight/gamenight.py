@@ -1,5 +1,6 @@
 from redbot.core import commands, Config
 from collections import defaultdict
+from contextlib import asynccontextmanager
 import discord
 from discord.ext import tasks
 import re
@@ -14,6 +15,11 @@ from datetime import datetime, timedelta, timezone
 from .games import GAMES  # Separate game list
 
 log = logging.getLogger("red.gamenight")
+
+
+class ConfigBusyError(RuntimeError):
+    """The shared Config lock did not become available in time."""
+
 
 class RSVPView(discord.ui.View):
     def __init__(self, cog):
@@ -221,6 +227,21 @@ class GameNight(commands.Cog):
             "auto_opened_date": None
         }
         self.config.register_global(**default_global)
+
+    @asynccontextmanager
+    async def _config_transaction(self):
+        # Own the lock outside Redbot's context manager: its __aenter__ may
+        # fail during reading, before its __aexit__ can release the lock.
+        lock = self.config.get_lock()
+        try:
+            await asyncio.wait_for(lock.acquire(), timeout=10)
+        except asyncio.TimeoutError as exc:
+            raise ConfigBusyError("GameNight Config lock unavailable for 10 seconds") from exc
+        try:
+            async with self.config.all(acquire_lock=False) as data:
+                yield data
+        finally:
+            lock.release()
 
     async def _get_or_restore_vote_message(self):
         """Retrieve or restore the cached vote message and channel, supporting startup recovery."""
@@ -705,7 +726,7 @@ class GameNight(commands.Cog):
     async def _finish_veto_penalties(self, channel):
         """Serve a penalty only during a later session in which the user attends."""
         restored = []
-        async with self.config.all() as data:
+        async with self._config_transaction() as data:
             for uid in data["active_veto_penalties"]:
                 attending = data["players"].get(uid) != "No" and (
                     uid in data["players"] or uid in data["votes"])
@@ -791,7 +812,7 @@ class GameNight(commands.Cog):
                 await self._track(sent)
             elif now >= warning:
                 # Recheck after any network awaits; a vote or withdrawal wins the race.
-                async with self.config.all() as current:
+                async with self._config_transaction() as current:
                     if (not self.is_open or current["players"].get(uid) == "No"
                             or int(uid) in self.votes):
                         continue
@@ -955,7 +976,7 @@ class GameNight(commands.Cog):
             The command message that triggered the open (tracked for cleanup).
         """
         await self._finish_veto_penalties(channel)
-        async with self.config.all() as data:
+        async with self._config_transaction() as data:
             data["penalty_session"] = str(time.time_ns())
             data["penalty_warnings"] = {}
             data["active_veto_penalties"] = list(data["veto_penalties"])
@@ -1051,7 +1072,11 @@ class GameNight(commands.Cog):
     @gamenight.command(name="open")
     @commands.admin_or_permissions(administrator=True)
     async def gn_open(self, ctx):
-        await self._do_open_vote(ctx.channel, trigger_message=ctx.message)
+        try:
+            await self._do_open_vote(ctx.channel, trigger_message=ctx.message)
+        except ConfigBusyError:
+            log.exception("Cannot open GameNight: Config lock is blocked")
+            await ctx.send("⚠️ GameNight storage is blocked. Restart the entire bot (not just this cog), then try again. Your saved data does not need to be reset.")
 
     async def _do_close_vote(self, channel: discord.TextChannel):
         """Shared logic for closing a vote session (used by !gn close and the Close Vote button)."""
@@ -1302,7 +1327,7 @@ class GameNight(commands.Cog):
         today = datetime.now().date()
         rejection = None
         # Check and consume quota together, including repeated/concurrent commands.
-        async with self.config.all() as data:
+        async with self._config_transaction() as data:
             limit = data["skip_limit"]
             history = data["skip_history"].setdefault(uid, [])
             if uid not in data["session_skip_users"]:
@@ -1650,7 +1675,7 @@ class GameNight(commands.Cog):
         """Finalize once on close; subsequent requests display the saved result."""
         # Commit the result and history together before sending Discord messages.
         # This also serializes concurrent results requests and survives a reload.
-        async with self.config.all() as data:
+        async with self._config_transaction() as data:
             saved_result = data["session_result"]
             result = json.loads(saved_result) if saved_result else None
             if not result:
