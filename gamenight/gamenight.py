@@ -901,6 +901,12 @@ class GameNight(commands.Cog):
             # Only evaluate once at least 3 people have RSVP'd.
             if player_count < 3:
                 self.all_voted_notified = False
+                if self._all_voted_msg:
+                    try:
+                        await self._all_voted_msg.delete()
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        pass
+                    self._all_voted_msg = None
                 return
 
             # Check who is still missing a vote
@@ -937,6 +943,14 @@ class GameNight(commands.Cog):
                         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                             pass
                         self._all_voted_msg = None
+                # The completion announcement is no longer true; remove it entirely.
+                self.all_voted_notified = False
+                if self._all_voted_msg:
+                    try:
+                        await self._all_voted_msg.delete()
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        pass
+                    self._all_voted_msg = None
 
         except discord.NotFound:
             pass  # Message was deleted
@@ -975,7 +989,11 @@ class GameNight(commands.Cog):
         trigger_message : discord.Message, optional
             The command message that triggered the open (tracked for cleanup).
         """
+        # Replacing an open round is not completion of a penalty. Only recover
+        # unfinished bookkeeping here when the previous round was closed.
+        if not self.is_open:
         await self._finish_veto_penalties(channel)
+            await self._finish_veto_penalties(channel)
         async with self._config_transaction() as data:
             data["penalty_session"] = str(time.time_ns())
             data["penalty_warnings"] = {}
