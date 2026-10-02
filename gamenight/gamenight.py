@@ -934,15 +934,6 @@ class GameNight(commands.Cog):
                     self._all_voted_msg = all_voted_msg
                     await self._track(all_voted_msg)
             else:
-                # Someone new clicked ✅ or has not voted yet — disable any existing close button
-                if self.all_voted_notified:
-                    self.all_voted_notified = False
-                    if self._all_voted_msg:
-                        try:
-                            await self._all_voted_msg.edit(view=None)
-                        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                            pass
-                        self._all_voted_msg = None
                 # The completion announcement is no longer true; remove it entirely.
                 self.all_voted_notified = False
                 if self._all_voted_msg:
@@ -992,7 +983,6 @@ class GameNight(commands.Cog):
         # Replacing an open round is not completion of a penalty. Only recover
         # unfinished bookkeeping here when the previous round was closed.
         if not self.is_open:
-        await self._finish_veto_penalties(channel)
             await self._finish_veto_penalties(channel)
         async with self._config_transaction() as data:
             data["penalty_session"] = str(time.time_ns())
