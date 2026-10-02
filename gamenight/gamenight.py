@@ -88,32 +88,23 @@ class CloseVoteView(discord.ui.View):
     )
     async def close_vote(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
+            # Acknowledge before permission checks, message edits or Config work.
+            # Complete this private response on every branch below.
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True, thinking=True)
             # Only admins can close
             if not interaction.user.guild_permissions.administrator:
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(
-                        "⛔ Only admins can close the vote.", ephemeral=True
-                    )
+                await interaction.edit_original_response(content="⛔ Only admins can close the vote.")
                 return
 
             active_cog = self.cog.bot.get_cog("GameNight")
             if active_cog is None:
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(
-                        "⚠️ Game Night plugin is not loaded.", ephemeral=True
-                    )
+                await interaction.edit_original_response(content="⚠️ Game Night plugin is not loaded.")
                 return
 
             if not active_cog.is_open:
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(
-                        "⛔ Voting is already closed.", ephemeral=True
-                    )
+                await interaction.edit_original_response(content="⛔ Voting is already closed.")
                 return
-
-            # Defer since close + results takes time
-            if not interaction.response.is_done():
-                await interaction.response.defer()
 
             # Disable the button on the message
             button.disabled = True
@@ -125,18 +116,20 @@ class CloseVoteView(discord.ui.View):
 
             # Close the vote using shared logic
             await active_cog._do_close_vote(interaction.channel)
+            await interaction.edit_original_response(content="✅ Voting is closed. The results are in the channel.")
 
         except discord.errors.InteractionResponded:
             pass
         except Exception as e:
+            log.exception("Close Vote interaction failed (interaction=%s)", interaction.id)
             try:
                 if not interaction.response.is_done():
                     await interaction.response.send_message(
                         "⚠️ Something went wrong. Please try again.", ephemeral=True
                     )
                 else:
-                    await interaction.followup.send(
-                        "⚠️ Something went wrong. Please try again.", ephemeral=True
+                    await interaction.edit_original_response(
+                        content="⚠️ Closing the vote encountered an error. Check the channel and bot log before trying again."
                     )
             except Exception:
                 pass
@@ -274,6 +267,8 @@ class GameNight(commands.Cog):
         # A failed/expired acknowledgement must not discard the user's selection.
         acknowledged = interaction.response.is_done()
         if not acknowledged:
+            received_age = (datetime.now(timezone.utc) - interaction.created_at).total_seconds()
+            ack_started = time.monotonic()
             try:
                 await interaction.response.defer(ephemeral=True, thinking=True)
                 acknowledged = True
@@ -283,6 +278,11 @@ class GameNight(commands.Cog):
                 log.exception("RSVP acknowledgement failed (interaction=%s, age=%.2fs)",
                               interaction.id,
                               (datetime.now(timezone.utc) - interaction.created_at).total_seconds())
+            finally:
+                ack_duration = time.monotonic() - ack_started
+                if received_age >= 2 or ack_duration >= 1:
+                    log.warning("Slow RSVP acknowledgement: interaction=%s, age_at_handler=%.2fs, acknowledgement_duration=%.2fs, acknowledged=%s",
+                                interaction.id, received_age, ack_duration, acknowledged)
 
         saved = False
         try:
