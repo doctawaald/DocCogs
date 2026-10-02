@@ -92,9 +92,16 @@ class CloseVoteView(discord.ui.View):
             # Complete this private response on every branch below.
             if not interaction.response.is_done():
                 await interaction.response.defer(ephemeral=True, thinking=True)
-            # Only admins can close
-            if not interaction.user.guild_permissions.administrator:
-                await interaction.edit_original_response(content="⛔ Only admins can close the vote.")
+            # Redbot admin roles need not have Discord's Administrator permission.
+            # Accept both, plus bot owners, like the command's admin requirement.
+            bot = self.cog.bot
+            allowed = (
+                interaction.user.guild_permissions.administrator
+                or await bot.is_owner(interaction.user)
+                or await bot.is_admin(interaction.user)
+            )
+            if not allowed:
+                await interaction.edit_original_response(content="⛔ Only bot owners, configured Redbot admins or Discord administrators can close the vote.")
                 return
 
             active_cog = self.cog.bot.get_cog("GameNight")
