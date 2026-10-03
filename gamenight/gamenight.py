@@ -178,6 +178,7 @@ class GameNight(commands.Cog):
         self._all_voted_msg: discord.Message | None = None
         self._close_lock = asyncio.Lock()
         self._rsvp_embed_lock = asyncio.Lock()
+        self._penalty_warning_lock = asyncio.Lock()
 
         # Message tracking for auto-cleanup
         self.tracked_messages: list[discord.Message] = []
@@ -206,6 +207,9 @@ class GameNight(commands.Cog):
             "session_skip_users": [],
             "penalty_session": None,
             "penalty_warnings": {},
+            "penalty_warning_message": None,
+            "penalty_notice_message": None,
+            "penalty_notice_users": [],
             "veto_penalties": {},
             "active_veto_penalties": [],
             "vote_message": None,
@@ -377,6 +381,8 @@ class GameNight(commands.Cog):
             
             joining_players = {uid: t_val for uid, t_val in players.items() if t_val != "No"}
             absent_players = {uid: t_val for uid, t_val in players.items() if t_val == "No"}
+            penalty_session = await self.config.penalty_session()
+            penalties = await self.config.veto_penalties()
             
             if joining_players:
                 # Format player list
@@ -387,7 +393,7 @@ class GameNight(commands.Cog):
                         pos, neg = self.votes[int(uid)]
                         status_emoji = "🎲" if (not pos and not neg) else "🎮"
                     else:
-                        status_emoji = "❓"
+                        status_emoji = "🔒" if penalty_session and penalties.get(uid) == penalty_session else "❓"
                     player_lines.append(f"• <@{uid}> - {t_val} {status_emoji}")
                     
                 embed.add_field(
@@ -540,6 +546,7 @@ class GameNight(commands.Cog):
         # Close the vote
         self.is_open = False
         await self.config.is_open.set(False)
+        await self._sync_penalty_warning(clear=True)
         self.all_voted_notified = False
         self.too_many_notified = False
 
@@ -591,7 +598,7 @@ class GameNight(commands.Cog):
             
         players = await self.config.players()
         joining_players = {uid: t_val for uid, t_val in players.items() if t_val != "No"}
-        missing_uids = [uid for uid in joining_players.keys() if int(uid) not in self.votes]
+        missing_uids = await self._missing_voters(joining_players)
         
         if missing_uids:
             pings = ", ".join(f"<@{uid}>" for uid in missing_uids)
@@ -683,7 +690,7 @@ class GameNight(commands.Cog):
             
         players = await self.config.players()
         joining_players = {uid: t_val for uid, t_val in players.items() if t_val != "No"}
-        missing_uids = [uid for uid in joining_players.keys() if int(uid) not in self.votes]
+        missing_uids = await self._missing_voters(joining_players)
         
         if not missing_uids:
             return  # Everyone already voted, no need for a reminder
@@ -768,6 +775,105 @@ class GameNight(commands.Cog):
     async def _before_penalty_loop(self):
         await self.bot.wait_until_ready()
 
+    async def _sync_penalty_warning(self, *, proposals=None, clear=False):
+        """Maintain one persistent warning with only people still waiting to vote."""
+        async with self._penalty_warning_lock:
+            data = await self.config.all()
+            deadlines = dict(data["penalty_warnings"])
+            deadlines.update(proposals or {})
+            waiting = {uid: deadline for uid, deadline in deadlines.items()
+                       if self.is_open and not clear
+                       and uid in data["players"] and data["players"][uid] != "No"
+                       and int(uid) not in self.votes
+                       and data["veto_penalties"].get(uid) != data["penalty_session"]}
+            reference = data["penalty_warning_message"]
+            if not waiting and not reference:
+                return
+            channel, _ = await self._get_or_restore_vote_message()
+            if reference:
+                channel = self.bot.get_channel(reference[0]) or await self.bot.fetch_channel(reference[0])
+            if not channel:
+                return
+            message = channel.get_partial_message(reference[1]) if reference else None
+            if not waiting:
+                if message:
+                    try:
+                        await message.delete()
+                    except discord.NotFound:
+                        pass
+                    await self.config.penalty_warning_message.set(None)
+                return
+            groups = defaultdict(list)
+            for uid, deadline in waiting.items():
+                groups[int(deadline)].append(f"<@{uid}>")
+            deadline_text = "\n".join(
+                f"**<t:{deadline}:t> (<t:{deadline}:R>)** — {', '.join(users)}"
+                for deadline, users in sorted(groups.items()))
+            embed = discord.Embed(
+                title="⚠️ Vote now — your next veto is at risk",
+                description=("These attending players have **not voted yet**.\n\n"
+                             f"**Voting deadlines**\n{deadline_text}\n\n"
+                             "Send a DM: `!vote Fortnite, Minecraft`. An accepted `!pass` also counts, "
+                             "within your monthly limit. If you cannot attend, select **Not joining today**.\n\n"
+                             "**Still no vote at your deadline?** On the **next game night you attend**, "
+                             "you lose your negative vote (`# Game`) and your first choice counts for "
+                             "**2 instead of 3 points** in weighted mode. No automatic skip is charged."),
+                color=discord.Color.orange(),
+            )
+            if message:
+                try:
+                    await message.edit(content=None, embed=embed,
+                        allowed_mentions=discord.AllowedMentions(users=False, roles=False, everyone=False))
+                except discord.NotFound:
+                    message = None
+            if message is None:
+                message = await channel.send(embed=embed,
+                    allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+                await self.config.penalty_warning_message.set([channel.id, message.id])
+                await self._track(message)
+            # A deadline becomes enforceable only after the warning was delivered.
+            async with self.config.penalty_warnings() as warnings:
+                warnings.update(waiting)
+
+    async def _sync_penalty_notice(self, channel):
+        """One announcement for all penalties incurred this round, including late voters."""
+        data = await self.config.all()
+        users = sorted(uid for uid, session in data["veto_penalties"].items()
+                       if session == data["penalty_session"])
+        if not users:
+            return
+        reference = data["penalty_notice_message"]
+        if reference and users == data["penalty_notice_users"]:
+            return
+        mentions = ", ".join(f"<@{uid}>" for uid in users)
+        embed = discord.Embed(
+            title="🔒 Deadline missed — next vote penalized",
+            description=(f"**Players:** {mentions}\n\n"
+                         "These players were marked as attending and did not vote before their warned deadlines.\n\n"
+                         "**Next game night each player attends: no negative vote (`# Game`), and the first "
+                         "choice is worth 2 instead of 3 points in weighted mode.**\n"
+                         "You can still play and vote positively. The penalty ends after that session "
+                         "unless you miss another deadline.\n\n"
+                         "You may still submit a vote tonight, but this does not cancel the penalty. "
+                         "**No skip was deducted.**"),
+            color=discord.Color.red(),
+        )
+        message = None
+        if reference:
+            notice_channel = self.bot.get_channel(reference[0]) or await self.bot.fetch_channel(reference[0])
+            message = notice_channel.get_partial_message(reference[1])
+            try:
+                await message.edit(content=None, embed=embed,
+                    allowed_mentions=discord.AllowedMentions(users=False, roles=False, everyone=False))
+            except discord.NotFound:
+                message = None
+        if message is None:
+            message = await channel.send(embed=embed,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+            await self.config.penalty_notice_message.set([channel.id, message.id])
+            await self._track(message)
+        await self.config.penalty_notice_users.set(users)
+
     async def _check_vote_deadlines(self):
         if not self.is_open:
             return
@@ -781,6 +887,7 @@ class GameNight(commands.Cog):
         players = data["players"]
         earliest = self._get_earliest_rsvp_datetime(players)
         if earliest is None:
+            await self._sync_penalty_warning()
             return
         # Keep clock-only RSVPs anchored to the day this session opened, including after reboot.
         opened = datetime.fromtimestamp(int(data["penalty_session"]) / 1_000_000_000)
@@ -788,6 +895,8 @@ class GameNight(commands.Cog):
         now = time.time()
         if now < earliest.timestamp() - 30 * 60:
             return
+        proposals = {}
+        penalties_added = False
         for uid, eta in players.items():
             if eta == "No" or int(uid) in self.votes:
                 continue
@@ -799,24 +908,7 @@ class GameNight(commands.Cog):
             # later extends it and triggers an updated warning.
             if warning is None or target > warning:
                 deadline = max(target, now + 10 * 60)
-                embed = discord.Embed(
-                    title="⚠️ Vote now — your next veto is at risk",
-                    description=(f"You are marked as attending, but have **not voted**.\n\n"
-                                 f"**Your deadline: <t:{int(deadline)}:t> (<t:{int(deadline)}:R>)**\n"
-                                 f"Earliest start: <t:{int(earliest.timestamp())}:t>.\n\n"
-                                 "Send a DM: `!vote Fortnite, Minecraft`. An accepted `!pass` also counts, "
-                                 "within your monthly limit. If you cannot attend, select **Not joining today**.\n\n"
-                                 "**Still no vote at the deadline?** On the **next game night you attend**, "
-                                 "you lose your negative vote (`# Game`) and your first choice counts for "
-                                 "**2 instead of 3 points** in weighted mode. "
-                                 "No automatic skip is charged."),
-                    color=discord.Color.orange(),
-                )
-                sent = await channel.send(content=f"<@{uid}>", embed=embed,
-                                          allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
-                async with self.config.penalty_warnings() as warnings:
-                    warnings[uid] = deadline
-                await self._track(sent)
+                proposals[uid] = deadline
             elif now >= warning:
                 # Recheck after any network awaits; a vote or withdrawal wins the race.
                 async with self._config_transaction() as current:
@@ -824,19 +916,12 @@ class GameNight(commands.Cog):
                             or int(uid) in self.votes):
                         continue
                     current["veto_penalties"][uid] = current["penalty_session"]
-                embed = discord.Embed(
-                    title="🔒 Deadline missed — next vote penalized",
-                    description=("You were marked as attending and did not vote before your warned deadline.\n\n"
-                                 "**Next game night you attend: no negative vote (`# Game`), and your first "
-                                 "choice is worth 2 instead of 3 points in weighted mode.**\n"
-                                 "You can still play and vote positively. The penalty ends after that session "
-                                 "unless you miss another deadline.\n\n"
-                                 "You may still submit a vote tonight, but this does not cancel the penalty. "
-                                 "**No skip was deducted.**"),
-                    color=discord.Color.red(),
-                )
-                await self._track(await channel.send(content=f"<@{uid}>", embed=embed,
-                    allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False)))
+                    penalties_added = True
+        await self._sync_penalty_notice(channel)
+        await self._sync_penalty_warning(proposals=proposals)
+        if penalties_added:
+            await self._update_rsvp_embed()
+            await self.check_completion()
 
     def normalize_game_name(self, user_input):
         clean_input = user_input.strip().lower()
@@ -868,10 +953,18 @@ class GameNight(commands.Cog):
         joining_players = [uid for uid, t_val in players.items() if t_val != "No"]
         return len(joining_players)
 
+    async def _missing_voters(self, players):
+        session = await self.config.penalty_session()
+        penalties = await self.config.veto_penalties()
+        return [uid for uid, eta in players.items()
+                if eta != "No" and int(uid) not in self.votes
+                and not (session and penalties.get(uid) == session)]
+
     async def check_completion(self):
         """Checks whether everyone who has an ETA has actually voted.
         Also sends a warning when more than TOO_MANY_PLAYERS_THRESHOLD players are present.
         """
+        await self._sync_penalty_warning()
         if not self.is_open:
             return
 
@@ -917,7 +1010,7 @@ class GameNight(commands.Cog):
                 return
 
             # Check who is still missing a vote
-            missing = [uid for uid in joining_players.keys() if int(uid) not in self.votes]
+            missing = await self._missing_voters(joining_players)
 
             if not missing:
                 # Everyone has voted — send the notification (only once)
@@ -933,8 +1026,8 @@ class GameNight(commands.Cog):
                         self._all_voted_msg = None
 
                     embed = discord.Embed(
-                        title="🎉 All votes are in!",
-                        description="Everyone who RSVP'd has voted.\nClick the button below to close voting and see the results!",
+                        title="✅ Voting is ready to close!",
+                        description="Everyone who RSVP'd has voted, passed, or received a penalty for missing their deadline.\nClick the button below to close voting and see the results!",
                         color=discord.Color.green(),
                     )
                     all_voted_msg = await channel.send(embed=embed, view=CloseVoteView(self))
@@ -989,11 +1082,14 @@ class GameNight(commands.Cog):
         """
         # Replacing an open round is not completion of a penalty. Only recover
         # unfinished bookkeeping here when the previous round was closed.
+        await self._sync_penalty_warning(clear=True)
         if not self.is_open:
             await self._finish_veto_penalties(channel)
         async with self._config_transaction() as data:
             data["penalty_session"] = str(time.time_ns())
             data["penalty_warnings"] = {}
+            data["penalty_notice_message"] = None
+            data["penalty_notice_users"] = []
             data["active_veto_penalties"] = list(data["veto_penalties"])
         self.is_open = True
         self.votes.clear()
@@ -1101,6 +1197,7 @@ class GameNight(commands.Cog):
 
             self.is_open = False
             await self.config.is_open.set(False)
+            await self._sync_penalty_warning(clear=True)
             self.all_voted_notified = False
             self.too_many_notified = False
 
@@ -1386,10 +1483,13 @@ class GameNight(commands.Cog):
     async def gn_reset(self, ctx):
         """Reset the current voting session completely."""
         self.is_open = False
+        await self._sync_penalty_warning(clear=True)
         # Reset cancels a session; it must not count as serving a veto penalty.
         await self.config.active_veto_penalties.set([])
         await self.config.penalty_warnings.set({})
         await self.config.penalty_session.set(None)
+        await self.config.penalty_notice_message.set(None)
+        await self.config.penalty_notice_users.set([])
         self.votes.clear()
         self.vote_message = None
         self.vote_channel = None
@@ -1566,10 +1666,10 @@ class GameNight(commands.Cog):
             
         players = await self.config.players()
         joining_players = {uid: t_val for uid, t_val in players.items() if t_val != "No"}
-        missing_uids = [uid for uid in joining_players.keys() if int(uid) not in self.votes]
+        missing_uids = await self._missing_voters(joining_players)
         
         if not missing_uids:
-            return await ctx.send("✅ Everyone who RSVP'd has already voted!")
+            return await ctx.send("✅ Nobody is waiting to vote: all attending players have voted, passed or received a deadline penalty.")
             
         pings = ", ".join(f"<@{uid}>" for uid in missing_uids)
         embed = discord.Embed(
@@ -1598,7 +1698,7 @@ class GameNight(commands.Cog):
         players = await self.config.players()
         joining_players = {uid: t_val for uid, t_val in players.items() if t_val != "No"}
         if joining_players:
-            missing_uids = [uid for uid in joining_players.keys() if int(uid) not in self.votes]
+            missing_uids = await self._missing_voters(joining_players)
             if missing_uids:
                 missing_names = []
                 for uid in missing_uids:
@@ -1607,7 +1707,7 @@ class GameNight(commands.Cog):
                     missing_names.append(name)
                 msg_text += f"\n⏳ **Still waiting for:** {', '.join(missing_names)}"
             else:
-                msg_text += "\n✅ **All RSVP'd players have voted!**"
+                msg_text += "\n✅ **All RSVP'd players have voted, passed or received a deadline penalty.**"
 
         await ctx.send(msg_text)
 
