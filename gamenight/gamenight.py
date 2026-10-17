@@ -28,9 +28,9 @@ class RSVPView(discord.ui.View):
 
     @discord.ui.select(
         custom_id="gn_rsvp_select",
-        placeholder="When will you be online?",
+        placeholder="Wanneer ben je online?",
         options=[
-            discord.SelectOption(label="Earlier (Before 20:00)", emoji="🕰️", value="Earlier"),
+            discord.SelectOption(label="Vroeger (voor 20:00)", emoji="🕰️", value="Earlier"),
             discord.SelectOption(label="20:00", emoji="🕗", value="20:00"),
             discord.SelectOption(label="20:30", emoji="🕣", value="20:30"),
             discord.SelectOption(label="21:00", emoji="🕘", value="21:00"),
@@ -38,8 +38,8 @@ class RSVPView(discord.ui.View):
             discord.SelectOption(label="22:00", emoji="🕙", value="22:00"),
             discord.SelectOption(label="22:30", emoji="🕥", value="22:30"),
             discord.SelectOption(label="23:00", emoji="🕚", value="23:00"),
-            discord.SelectOption(label="Later (After 23:00)", emoji="🦉", value="Later"),
-            discord.SelectOption(label="Not joining today", emoji="❌", value="No")
+            discord.SelectOption(label="Later (na 23:00)", emoji="🦉", value="Later"),
+            discord.SelectOption(label="Vandaag niet aanwezig", emoji="❌", value="No")
         ]
     )
     async def rsvp_select(self, interaction: discord.Interaction, select: discord.ui.Select):
@@ -55,7 +55,7 @@ class RSVPView(discord.ui.View):
                 # No active GameNight cog found — respond gracefully
                 if not interaction.response.is_done():
                     await interaction.response.send_message(
-                        "⚠️ Game Night plugin is not loaded.", ephemeral=True
+                        "⚠️ De GameNight-plugin is niet geladen.", ephemeral=True
                     )
         except discord.errors.InteractionResponded:
             pass  # Already responded — safe to ignore
@@ -65,11 +65,11 @@ class RSVPView(discord.ui.View):
             try:
                 if not interaction.response.is_done():
                     await interaction.response.send_message(
-                        "⚠️ Something went wrong. Please try again.", ephemeral=True
+                        "⚠️ Er ging iets mis. Probeer het opnieuw.", ephemeral=True
                     )
                 else:
                     await interaction.followup.send(
-                        "⚠️ Something went wrong. Please try again.", ephemeral=True
+                        "⚠️ Er ging iets mis. Probeer het opnieuw.", ephemeral=True
                     )
             except Exception:
                 pass  # Nothing more we can do
@@ -82,7 +82,7 @@ class CloseVoteView(discord.ui.View):
 
     @discord.ui.button(
         custom_id="gn_close_vote_btn",
-        label="Close Vote",
+        label="Stemming sluiten",
         style=discord.ButtonStyle.success,
         emoji="🛑"
     )
@@ -101,21 +101,21 @@ class CloseVoteView(discord.ui.View):
                 or await bot.is_admin(interaction.user)
             )
             if not allowed:
-                await interaction.edit_original_response(content="⛔ Only bot owners, configured Redbot admins or Discord administrators can close the vote.")
+                await interaction.edit_original_response(content="⛔ Alleen boteigenaars, ingestelde Redbot-beheerders of Discord-beheerders kunnen de stemming sluiten.")
                 return
 
             active_cog = self.cog.bot.get_cog("GameNight")
             if active_cog is None:
-                await interaction.edit_original_response(content="⚠️ Game Night plugin is not loaded.")
+                await interaction.edit_original_response(content="⚠️ De GameNight-plugin is niet geladen.")
                 return
 
             if not active_cog.is_open:
-                await interaction.edit_original_response(content="⛔ Voting is already closed.")
+                await interaction.edit_original_response(content="⛔ De stemming is al gesloten.")
                 return
 
             # Disable the button on the message
             button.disabled = True
-            button.label = "Vote Closed ✅"
+            button.label = "Stemming gesloten ✅"
             try:
                 await interaction.message.edit(view=self)
             except Exception:
@@ -123,7 +123,7 @@ class CloseVoteView(discord.ui.View):
 
             # Close the vote using shared logic
             await active_cog._do_close_vote(interaction.channel)
-            await interaction.edit_original_response(content="✅ Voting is closed. The results are in the channel.")
+            await interaction.edit_original_response(content="✅ De stemming is gesloten. De uitslag staat in het kanaal.")
 
         except discord.errors.InteractionResponded:
             pass
@@ -132,11 +132,11 @@ class CloseVoteView(discord.ui.View):
             try:
                 if not interaction.response.is_done():
                     await interaction.response.send_message(
-                        "⚠️ Something went wrong. Please try again.", ephemeral=True
+                        "⚠️ Er ging iets mis. Probeer het opnieuw.", ephemeral=True
                     )
                 else:
                     await interaction.edit_original_response(
-                        content="⚠️ Closing the vote encountered an error. Check the channel and bot log before trying again."
+                        content="⚠️ Er ging iets mis bij het sluiten. Controleer het kanaal en het botlog voordat je het opnieuw probeert."
                     )
             except Exception:
                 pass
@@ -163,7 +163,7 @@ RSVP_TIME_MAP = {
 
 
 class GameNight(commands.Cog):
-    """The Ultimate Game Night Plugin: Clean, Secret & Stats."""
+    """Organiseer gameavonden met geheime stemmen, aanwezigheden en statistieken."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -179,6 +179,7 @@ class GameNight(commands.Cog):
         self._close_lock = asyncio.Lock()
         self._rsvp_embed_lock = asyncio.Lock()
         self._penalty_warning_lock = asyncio.Lock()
+        self._completion_lock = asyncio.Lock()
 
         # Message tracking for auto-cleanup
         self.tracked_messages: list[discord.Message] = []
@@ -210,6 +211,10 @@ class GameNight(commands.Cog):
             "penalty_warning_message": None,
             "penalty_notice_message": None,
             "penalty_notice_users": [],
+            "temporary_pings": {},
+            "pending_message_deletions": {},
+            "all_voted_message": None,
+            "completion_state_migrated": False,
             "veto_penalties": {},
             "active_veto_penalties": [],
             "vote_message": None,
@@ -299,15 +304,18 @@ class GameNight(commands.Cog):
         try:
             if not self.is_open:
                 if acknowledged:
-                    await interaction.edit_original_response(content="Voting is currently closed.")
+                    await interaction.edit_original_response(content="De stemming is momenteel gesloten.")
                 return
                 
-            async with self.config.players() as players:
-                players[str(interaction.user.id)] = time_val
+            async with self._config_transaction() as data:
+                uid = str(interaction.user.id)
+                data["players"][uid] = time_val
                 if time_val == "No":
-                    msg = "❌ You are marked as **not joining** today."
+                    data["penalty_warnings"].pop(uid, None)
+                    msg = "❌ Je staat vandaag als **afwezig** geregistreerd."
                 else:
-                    msg = f"✅ You are marked as playing at **{time_val}**!"
+                    display_time = {"Earlier": "vóór 20:00", "Later": "na 23:00"}.get(time_val, time_val)
+                    msg = f"✅ Je staat als aanwezig geregistreerd vanaf **{display_time}**!"
                     
             saved = True
             penalty_embed = None
@@ -335,8 +343,8 @@ class GameNight(commands.Cog):
             # Last resort: make sure the user gets feedback
             try:
                 await interaction.followup.send(
-                    ("⚠️ Your RSVP was saved, but the display could not be updated."
-                     if saved else "⚠️ Your RSVP could not be saved. Please try again."), ephemeral=True
+                    ("⚠️ Je aanmelding is opgeslagen, maar het bericht kon niet worden bijgewerkt."
+                     if saved else "⚠️ Je aanmelding kon niet worden opgeslagen. Probeer het opnieuw."), ephemeral=True
                 )
             except Exception:
                 pass
@@ -359,23 +367,23 @@ class GameNight(commands.Cog):
             embed = msg.embeds[0].copy()
             players = await self.config.players()
             limit = await self.config.skip_limit()
-            rule = ("Skipping: unlimited." if limit is None else
-                    f"Skipping: max {limit} sessions per calendar month.")
+            rule = ("Passen: onbeperkt." if limit is None else
+                    f"Passen: maximaal {limit} keer per kalendermaand.")
             if embed.description:
-                embed.description = re.sub(r"Skipping: [^\n]*", rule, embed.description)
+                embed.description = re.sub(r"(?:Skipping|Passen): [^\n]*", rule, embed.description)
             
             # Rebuild the fields
             embed.clear_fields()
             embed.add_field(
-                name="Are you gaming tonight?",
-                value="Select your expected time in the dropdown below.\nSelect ❌ if you can't make it.",
+                name="Speel je vanavond mee?",
+                value="Kies hieronder je verwachte aankomsttijd.\nKies ❌ als je niet kunt meedoen.",
                 inline=False,
             )
             embed.add_field(
-                name="⚠️ Vote deadline & veto penalty",
-                value=("Vote by **10 minutes before the earliest start**. Watch for your warning and exact deadline.\n"
-                       "Missing it means **no negative vote** and a **2-point first choice** next game night you attend.\n"
-                       "An accepted `!pass` counts. No automatic skip is charged."),
+                name="⚠️ Stemdeadline en straf",
+                value=("Stem uiterlijk **10 minuten vóór de vroegste starttijd**. Bekijk je waarschuwing voor je exacte deadline.\n"
+                       "Mis je de deadline? De volgende avond waarop je aanwezig bent: **geen negatieve stem** en een **eerste keuze van 2 punten** bij gewogen stemmen.\n"
+                       "Een geaccepteerde `!pass` telt ook. Er wordt nooit automatisch een pass afgetrokken."),
                 inline=False,
             )
             
@@ -394,10 +402,11 @@ class GameNight(commands.Cog):
                         status_emoji = "🎲" if (not pos and not neg) else "🎮"
                     else:
                         status_emoji = "🔒" if penalty_session and penalties.get(uid) == penalty_session else "❓"
-                    player_lines.append(f"• <@{uid}> - {t_val} {status_emoji}")
+                    display_time = {"Earlier": "vóór 20:00", "Later": "na 23:00"}.get(t_val, t_val)
+                    player_lines.append(f"• <@{uid}> - {display_time} {status_emoji}")
                     
                 embed.add_field(
-                    name=f"🎮 Players & ETA ({len(joining_players)})",
+                    name=f"🎮 Spelers en aankomsttijd ({len(joining_players)})",
                     value="\n".join(player_lines),
                     inline=False
                 )
@@ -409,7 +418,7 @@ class GameNight(commands.Cog):
                     absent_lines.append(f"• <@{uid}>")
                     
                 embed.add_field(
-                    name=f"❌ Not Joining ({len(absent_players)})",
+                    name=f"❌ Afwezig ({len(absent_players)})",
                     value="\n".join(absent_lines),
                     inline=False
                 )
@@ -523,6 +532,93 @@ class GameNight(commands.Cog):
             async with self.config.tracked_messages() as tracked:
                 tracked.append([msg.channel.id, msg.id])
 
+    async def _send_temporary_ping(self, channel, users):
+        """Ping separately from the embed; recover overdue deletions after reboot."""
+        if not users:
+            return
+        message = await channel.send(
+            content=" ".join(f"<@{uid}>" for uid in users) + "\nDit bericht dient alleen als ping en wordt na 1 minuut automatisch verwijderd.", delete_after=60,
+            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+        async with self.config.temporary_pings() as pending:
+            pending[str(message.id)] = [channel.id, time.time() + 60]
+
+    async def _cleanup_temporary_pings(self):
+        for message_id, (channel_id, deadline) in (await self.config.temporary_pings()).items():
+            if time.time() < deadline:
+                continue
+            try:
+                channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+                await channel.get_partial_message(int(message_id)).delete()
+            except discord.NotFound:
+                pass
+            except discord.HTTPException:
+                log.exception("Could not delete temporary ping %s", message_id)
+                continue
+            async with self.config.temporary_pings() as pending:
+                pending.pop(message_id, None)
+
+    async def _clear_completion_message(self):
+        try:
+            await self._migrate_completion_message()
+        except (discord.HTTPException, discord.Forbidden):
+            log.exception("Could not recover legacy completion message during cleanup")
+        reference = await self.config.all_voted_message()
+        message = self._all_voted_msg
+        if reference:
+            await self._delete_message_or_retry(*reference, message=message)
+        elif message:
+            await self._delete_message_or_retry(message.channel.id, message.id, message=message)
+        await self.config.all_voted_message.set(None)
+        self._all_voted_msg = None
+        self.all_voted_notified = False
+
+    async def _delete_message_or_retry(self, channel_id, message_id, *, message=None):
+        """Persist cleanup before Discord I/O; a failed deletion must not stop voting."""
+        key = f"{channel_id}:{message_id}"
+        async with self.config.pending_message_deletions() as pending:
+            pending[key] = [channel_id, message_id]
+        try:
+            if message is None:
+                channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+                message = channel.get_partial_message(message_id)
+            await message.delete()
+        except discord.NotFound:
+            pass
+        except (discord.HTTPException, discord.Forbidden):
+            log.exception("Message deletion failed; will retry %s", key)
+            return
+        async with self.config.pending_message_deletions() as pending:
+            pending.pop(key, None)
+
+    async def _retry_message_deletions(self):
+        for channel_id, message_id in (await self.config.pending_message_deletions()).values():
+            await self._delete_message_or_retry(channel_id, message_id)
+
+    async def _migrate_completion_message(self):
+        """Recover a ready message created before its dedicated Config reference existed."""
+        if await self.config.completion_state_migrated():
+            return
+        reference = await self.config.all_voted_message()
+        vote_reference = await self.config.vote_message()
+        if not reference and vote_reference:
+            for channel_id, message_id in await self.config.tracked_messages():
+                if channel_id != vote_reference[0] or message_id <= vote_reference[1]:
+                    continue
+                channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+                try:
+                    message = await channel.fetch_message(message_id)
+                except discord.NotFound:
+                    continue
+                if not any(getattr(item, "custom_id", None) == "gn_close_vote_btn"
+                           for row in message.components for item in row.children):
+                    continue
+                if reference:
+                    await self._delete_message_or_retry(channel_id, message_id, message=message)
+                else:
+                    reference = [channel_id, message_id]
+                    await self.config.all_voted_message.set(reference)
+        await self.config.completion_state_migrated.set(True)
+
     async def _schedule_cleanup(self, delay_seconds: float):
         """Wait `delay_seconds` then bulk-delete all tracked messages, fetching channels if uncached."""
         await asyncio.sleep(delay_seconds)
@@ -545,6 +641,7 @@ class GameNight(commands.Cog):
 
         # Close the vote
         self.is_open = False
+        await self._clear_completion_message()
         await self.config.is_open.set(False)
         await self._sync_penalty_warning(clear=True)
         self.all_voted_notified = False
@@ -603,17 +700,18 @@ class GameNight(commands.Cog):
         if missing_uids:
             pings = ", ".join(f"<@{uid}>" for uid in missing_uids)
             embed = discord.Embed(
-                title="⏳ Voting Reminder!",
+                title="⏳ Vergeet niet te stemmen!",
                 description=(
                     f"Hey {pings},\n\n"
-                    f"You have RSVP'd for game night tonight but haven't submitted your votes yet!\n"
-                    f"Please send me a **DM** with your choices so we can decide what to play.\n\n"
-                    f"Example: `!vote Fortnite, Palworld` 🤫"
+                    f"Je staat als aanwezig voor vanavond, maar hebt nog niet gestemd!\n"
+                    f"Stuur mij een **DM** met je keuzes, zodat we kunnen bepalen wat we spelen.\n\n"
+                    f"Voorbeeld: `!vote Fortnite, Palworld` 🤫"
                 ),
                 color=discord.Color.yellow(),
             )
             reminder_msg = await channel.send(embed=embed)
             await self._track(reminder_msg)
+            await self._send_temporary_ping(channel, missing_uids)
             
         await self.config.reminder_time.set(None)
 
@@ -704,19 +802,19 @@ class GameNight(commands.Cog):
             if mins > 0:
                 offset_text = f"{hours}h{mins}m"
             else:
-                offset_text = f"{hours} hour(s)"
+                offset_text = f"{hours} uur"
         else:
-            offset_text = f"{offset_minutes} minutes"
+            offset_text = f"{offset_minutes} minuten"
         
         pings = ", ".join(f"<@{uid}>" for uid in missing_uids)
         embed = discord.Embed(
-            title="🔔 Game Night is starting soon!",
+            title="🔔 De gameavond begint binnenkort!",
             description=(
                 f"Hey {pings},\n\n"
-                f"The first player is expected at **{earliest_str}** — that's in **{offset_text}**!\n"
-                f"You've RSVP'd but haven't **picked your games** yet.\n\n"
-                f"Send me a **DM** with your choices:\n"
-                f"Example: `!vote Fortnite, Palworld` 🤫"
+                f"De eerste speler wordt verwacht om **{earliest_str}** — over **{offset_text}**!\n"
+                f"Je staat als aanwezig, maar hebt **nog geen games gekozen**.\n\n"
+                f"Stuur mij een **DM** met je keuzes:\n"
+                f"Voorbeeld: `!vote Fortnite, Palworld` 🤫"
             ),
             color=discord.Color.orange(),
         )
@@ -725,15 +823,17 @@ class GameNight(commands.Cog):
         await self.config.smart_reminder_sent.set(True)
         await self._track(reminder_msg)
 
+        await self._send_temporary_ping(channel, missing_uids)
+
     def _veto_blocked_embed(self):
         return discord.Embed(
-            title="🔒 Voting penalty this game night",
-            description=("You missed a voting deadline on a previous game night.\n\n"
-                         "**You can still vote for games:** `!vote Fortnite, Minecraft`\n"
-                         "Your `# Game` negative vote is unavailable this session. "
-                         "Remove it and send your vote again.\n\n"
-                         "In weighted mode, your first choice counts for **2 instead of 3 points**. "
-                         "The penalty ends after this session if you attend, unless you miss another deadline."),
+            title="🔒 Stemstraf tijdens deze gameavond",
+            description=("Je hebt tijdens een eerdere gameavond de stemdeadline gemist.\n\n"
+                         "**Je kunt nog steeds op games stemmen:** `!vote Fortnite, Minecraft`\n"
+                         "Je negatieve stem (`# Game`) is deze ronde niet beschikbaar. "
+                         "Verwijder die en stuur je stem opnieuw.\n\n"
+                         "Bij gewogen stemmen telt je eerste keuze voor **2 in plaats van 3 punten**. "
+                         "De straf eindigt na deze ronde als je aanwezig bent, tenzij je opnieuw een deadline mist."),
             color=discord.Color.red(),
         )
 
@@ -751,9 +851,9 @@ class GameNight(commands.Cog):
             data["active_veto_penalties"] = []
         if restored and channel:
             embed = discord.Embed(
-                title="✅ Voting penalty complete",
-                description=("Your one-session penalty is complete. Next game night you may use a negative vote "
-                             "again when veto mode is enabled, and your first choice is worth 3 points in weighted mode."),
+                title="✅ Stemstraf afgelopen",
+                description=("Je straf van één ronde is afgelopen. De volgende gameavond mag je weer een negatieve stem gebruiken "
+                             "als veto is ingeschakeld, en telt je eerste keuze weer voor 3 punten bij gewogen stemmen."),
                 color=discord.Color.green(),
             )
             try:
@@ -766,6 +866,8 @@ class GameNight(commands.Cog):
     @tasks.loop(seconds=30)
     async def _penalty_loop(self):
         try:
+            await self._retry_message_deletions()
+            await self._cleanup_temporary_pings()
             async with self._close_lock:
                 await self._check_vote_deadlines()
         except Exception:
@@ -787,6 +889,14 @@ class GameNight(commands.Cog):
                        and int(uid) not in self.votes
                        and data["veto_penalties"].get(uid) != data["penalty_session"]}
             reference = data["penalty_warning_message"]
+            # Remove obsolete deadlines even if no message/channel is available.
+            # Proposed deadlines are only committed after the warning is delivered.
+            async with self._config_transaction() as current:
+                for uid in list(current["penalty_warnings"]):
+                    if (clear or not self.is_open or uid not in current["players"]
+                            or current["players"][uid] == "No" or int(uid) in self.votes
+                            or current["veto_penalties"].get(uid) == current["penalty_session"]):
+                        current["penalty_warnings"].pop(uid, None)
             if not waiting and not reference:
                 return
             channel, _ = await self._get_or_restore_vote_message()
@@ -810,14 +920,14 @@ class GameNight(commands.Cog):
                 f"**<t:{deadline}:t> (<t:{deadline}:R>)** — {', '.join(users)}"
                 for deadline, users in sorted(groups.items()))
             embed = discord.Embed(
-                title="⚠️ Vote now — your next veto is at risk",
-                description=("These attending players have **not voted yet**.\n\n"
-                             f"**Voting deadlines**\n{deadline_text}\n\n"
-                             "Send a DM: `!vote Fortnite, Minecraft`. An accepted `!pass` also counts, "
-                             "within your monthly limit. If you cannot attend, select **Not joining today**.\n\n"
-                             "**Still no vote at your deadline?** On the **next game night you attend**, "
-                             "you lose your negative vote (`# Game`) and your first choice counts for "
-                             "**2 instead of 3 points** in weighted mode. No automatic skip is charged."),
+                title="⚠️ Stem op tijd — voorkom een straf",
+                description=("Deze aanwezige spelers hebben **nog niet gestemd**.\n\n"
+                             f"**Stemdeadlines**\n{deadline_text}\n\n"
+                             "Stuur een DM: `!vote Fortnite, Minecraft`. Een geaccepteerde `!pass` telt ook, "
+                             "binnen je maandlimiet. Kun je niet meedoen? Kies **Vandaag niet aanwezig**.\n\n"
+                             "**Niet gestemd vóór je deadline?** Tijdens de **volgende gameavond waarop je aanwezig bent**, "
+                             "vervalt je negatieve stem (`# Game`) en telt je eerste keuze voor "
+                             "**2 in plaats van 3 punten** bij gewogen stemmen. Er wordt geen pass afgetrokken."),
                 color=discord.Color.orange(),
             )
             if message:
@@ -832,8 +942,14 @@ class GameNight(commands.Cog):
                 await self.config.penalty_warning_message.set([channel.id, message.id])
                 await self._track(message)
             # A deadline becomes enforceable only after the warning was delivered.
-            async with self.config.penalty_warnings() as warnings:
-                warnings.update(waiting)
+            async with self._config_transaction() as current:
+                if self.is_open and current["penalty_session"] == data["penalty_session"]:
+                    for uid, deadline in waiting.items():
+                        if (current["players"].get(uid, "No") != "No" and int(uid) not in self.votes
+                                and current["veto_penalties"].get(uid) != current["penalty_session"]):
+                            current["penalty_warnings"][uid] = deadline
+            new_users = [uid for uid in waiting if uid not in data["penalty_warnings"]]
+            await self._send_temporary_ping(channel, new_users)
 
     async def _sync_penalty_notice(self, channel):
         """One announcement for all penalties incurred this round, including late voters."""
@@ -847,15 +963,15 @@ class GameNight(commands.Cog):
             return
         mentions = ", ".join(f"<@{uid}>" for uid in users)
         embed = discord.Embed(
-            title="🔒 Deadline missed — next vote penalized",
-            description=(f"**Players:** {mentions}\n\n"
-                         "These players were marked as attending and did not vote before their warned deadlines.\n\n"
-                         "**Next game night each player attends: no negative vote (`# Game`), and the first "
-                         "choice is worth 2 instead of 3 points in weighted mode.**\n"
-                         "You can still play and vote positively. The penalty ends after that session "
-                         "unless you miss another deadline.\n\n"
-                         "You may still submit a vote tonight, but this does not cancel the penalty. "
-                         "**No skip was deducted.**"),
+            title="🔒 Deadline gemist — straf bij de volgende gameavond",
+            description=(f"**Spelers:** {mentions}\n\n"
+                         "Deze spelers stonden als aanwezig geregistreerd en stemden niet vóór hun aangekondigde deadline.\n\n"
+                         "**De volgende gameavond waarop deze spelers aanwezig zijn: geen negatieve stem (`# Game`) en de eerste "
+                         "keuze telt voor 2 in plaats van 3 punten bij gewogen stemmen.**\n"
+                         "Je mag gewoon meespelen en positief stemmen. De straf eindigt na die ronde, "
+                         "tenzij je opnieuw een deadline mist.\n\n"
+                         "Je mag vanavond nog stemmen, maar dat maakt de straf niet ongedaan. "
+                         "**Er is geen pass afgetrokken.**"),
             color=discord.Color.red(),
         )
         message = None
@@ -873,6 +989,7 @@ class GameNight(commands.Cog):
             await self.config.penalty_notice_message.set([channel.id, message.id])
             await self._track(message)
         await self.config.penalty_notice_users.set(users)
+        await self._send_temporary_ping(channel, [uid for uid in users if uid not in data["penalty_notice_users"]])
 
     async def _check_vote_deadlines(self):
         if not self.is_open:
@@ -893,8 +1010,7 @@ class GameNight(commands.Cog):
         opened = datetime.fromtimestamp(int(data["penalty_session"]) / 1_000_000_000)
         earliest = earliest.replace(year=opened.year, month=opened.month, day=opened.day)
         now = time.time()
-        if now < earliest.timestamp() - 30 * 60:
-            return
+        before_warning_window = now < earliest.timestamp() - 30 * 60
         proposals = {}
         penalties_added = False
         for uid, eta in players.items():
@@ -903,6 +1019,8 @@ class GameNight(commands.Cog):
             if data["veto_penalties"].get(uid) == data["penalty_session"]:
                 continue
             warning = data["penalty_warnings"].get(uid)
+            if before_warning_window and warning is None:
+                continue
             target = earliest.timestamp() - 10 * 60
             # Never bring a previously announced deadline forward. Moving the start
             # later extends it and triggers an updated warning.
@@ -913,7 +1031,8 @@ class GameNight(commands.Cog):
                 # Recheck after any network awaits; a vote or withdrawal wins the race.
                 async with self._config_transaction() as current:
                     if (not self.is_open or current["players"].get(uid) == "No"
-                            or int(uid) in self.votes):
+                            or int(uid) in self.votes
+                            or current["penalty_warnings"].get(uid) != warning):
                         continue
                     current["veto_penalties"][uid] = current["penalty_session"]
                     penalties_added = True
@@ -961,6 +1080,10 @@ class GameNight(commands.Cog):
                 and not (session and penalties.get(uid) == session)]
 
     async def check_completion(self):
+        async with self._completion_lock:
+            await self._check_completion_locked()
+
+    async def _check_completion_locked(self):
         """Checks whether everyone who has an ETA has actually voted.
         Also sends a warning when more than TOO_MANY_PLAYERS_THRESHOLD players are present.
         """
@@ -972,6 +1095,17 @@ class GameNight(commands.Cog):
         if not msg or not channel:
             return
 
+        await self._migrate_completion_message()
+        reference = await self.config.all_voted_message()
+        if reference and self._all_voted_msg is None:
+            try:
+                saved_channel = self.bot.get_channel(reference[0]) or await self.bot.fetch_channel(reference[0])
+                self._all_voted_msg = await saved_channel.fetch_message(reference[1])
+                self.all_voted_notified = True
+            except discord.NotFound:
+                await self.config.all_voted_message.set(None)
+                self.all_voted_notified = False
+
         try:
             players = await self.config.players()
             joining_players = {uid: t_val for uid, t_val in players.items() if t_val != "No"}
@@ -982,12 +1116,12 @@ class GameNight(commands.Cog):
                 if not self.too_many_notified:
                     self.too_many_notified = True
                     embed = discord.Embed(
-                        title="⚠️ A lot of players tonight!",
+                        title="⚠️ Veel spelers vanavond!",
                         description=(
-                            f"There are now **{player_count} players** marked as present.\n"
-                            f"Games that only support **{TOO_MANY_PLAYERS_THRESHOLD} players** "
-                            f"are now **a bad idea**. 🚫\n\n"
-                            "Keep player limits in mind when voting!"
+                            f"Er staan nu **{player_count} spelers** als aanwezig geregistreerd.\n"
+                            f"Games voor maximaal **{TOO_MANY_PLAYERS_THRESHOLD} spelers** "
+                            f"zijn nu **minder geschikt**. 🚫\n\n"
+                            "Houd bij het stemmen rekening met het maximale aantal spelers!"
                         ),
                         color=discord.Color.orange(),
                     )
@@ -1000,13 +1134,7 @@ class GameNight(commands.Cog):
             # ── Minimum threshold for the "all votes in" check ──────────────
             # Only evaluate once at least 3 people have RSVP'd.
             if player_count < 3:
-                self.all_voted_notified = False
-                if self._all_voted_msg:
-                    try:
-                        await self._all_voted_msg.delete()
-                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                        pass
-                    self._all_voted_msg = None
+                await self._clear_completion_message()
                 return
 
             # Check who is still missing a vote
@@ -1015,7 +1143,6 @@ class GameNight(commands.Cog):
             if not missing:
                 # Everyone has voted — send the notification (only once)
                 if not self.all_voted_notified:
-                    self.all_voted_notified = True
 
                     # Clean up old all_voted notification if one was sent previously
                     if self._all_voted_msg:
@@ -1026,22 +1153,18 @@ class GameNight(commands.Cog):
                         self._all_voted_msg = None
 
                     embed = discord.Embed(
-                        title="✅ Voting is ready to close!",
-                        description="Everyone who RSVP'd has voted, passed, or received a penalty for missing their deadline.\nClick the button below to close voting and see the results!",
+                        title="✅ De stemming kan gesloten worden!",
+                        description="Alle aanwezigen hebben gestemd, gepast of een straf gekregen voor het missen van hun deadline.\nKlik hieronder om de stemming te sluiten en de uitslag te bekijken!",
                         color=discord.Color.green(),
                     )
                     all_voted_msg = await channel.send(embed=embed, view=CloseVoteView(self))
                     self._all_voted_msg = all_voted_msg
+                    await self.config.all_voted_message.set([channel.id, all_voted_msg.id])
+                    self.all_voted_notified = True
                     await self._track(all_voted_msg)
             else:
                 # The completion announcement is no longer true; remove it entirely.
-                self.all_voted_notified = False
-                if self._all_voted_msg:
-                    try:
-                        await self._all_voted_msg.delete()
-                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                        pass
-                    self._all_voted_msg = None
+                await self._clear_completion_message()
 
         except discord.NotFound:
             pass  # Message was deleted
@@ -1052,23 +1175,26 @@ class GameNight(commands.Cog):
 
     @commands.group(name="gn", invoke_without_command=True)
     async def gamenight(self, ctx):
+        """Beheer de gameavond, stemming, herinneringen en instellingen."""
         await ctx.send_help(ctx.command)
 
     @gamenight.command(name="mode")
     @commands.admin_or_permissions(administrator=True)
     async def gn_mode(self, ctx):
+        """Schakel gewogen stemmen (3-2-1 punten) in of uit."""
         current = await self.config.weighted_mode()
         await self.config.weighted_mode.set(not current)
-        status = "**ON** (3-2-1)" if not current else "**OFF** (1-1-1)"
-        await ctx.send(f"⚖️ Bonus point system is now {status}.")
+        status = "**AAN** (3-2-1)" if not current else "**UIT** (1-1-1)"
+        await ctx.send(f"⚖️ Gewogen stemmen staat nu {status}.")
 
     @gamenight.command(name="veto")
     @commands.admin_or_permissions(administrator=True)
     async def gn_veto(self, ctx):
+        """Schakel de negatieve stem met # in of uit."""
         current = await self.config.veto_mode()
         await self.config.veto_mode.set(not current)
-        status = "**ENABLED** 💀" if not current else "**DISABLED** ☮️"
-        await ctx.send(f"🛡️ Veto Mode is now {status}.")
+        status = "**INGESCHAKELD** 💀" if not current else "**UITGESCHAKELD** ☮️"
+        await ctx.send(f"🛡️ Veto staat nu {status}.")
 
     async def _do_open_vote(self, channel: discord.TextChannel, trigger_message: discord.Message = None):
         """Shared logic to open a new voting session in the given channel.
@@ -1085,8 +1211,11 @@ class GameNight(commands.Cog):
         await self._sync_penalty_warning(clear=True)
         if not self.is_open:
             await self._finish_veto_penalties(channel)
+        await self._clear_completion_message()
         async with self._config_transaction() as data:
             data["penalty_session"] = str(time.time_ns())
+            data["all_voted_message"] = None
+            data["completion_state_migrated"] = True
             data["penalty_warnings"] = {}
             data["penalty_notice_message"] = None
             data["penalty_notice_users"] = []
@@ -1120,36 +1249,36 @@ class GameNight(commands.Cog):
         weighted = await self.config.weighted_mode()
         veto = await self.config.veto_mode()
         skip_limit = await self.config.skip_limit()
-        skip_rule = ("Skipping: unlimited." if skip_limit is None else
-                     f"Skipping: max {skip_limit} sessions per calendar month.")
+        skip_rule = ("Passen: onbeperkt." if skip_limit is None else
+                     f"Passen: maximaal {skip_limit} keer per kalendermaand.")
 
-        rules = "🥇 3 pts | 🥈 2 pts | 🥉 1 pt" if weighted else "Every positive vote is 1 point."
+        rules = "🥇 3 punten | 🥈 2 punten | 🥉 1 pt" if weighted else "Elke positieve stem telt voor 1 punt."
 
         if veto:
-            veto_text = "\n💀 **VETO ENABLED:** use `#` to downvote a game (-1 pt)."
-            example = "`!vote Game1, Game2, Game3 # BadGame`"
+            veto_text = "\n💀 **VETO INGESCHAKELD:** gebruik `#` voor een negatieve stem op een game (-1 punt)."
+            example = "`!vote Minecraft, Fortnite, Palworld # Roblox`"
         else:
             veto_text = ""
-            example = "`!vote Game1, Game2, Game3`"
+            example = "`!vote Minecraft, Fortnite, Palworld`"
 
         embed = discord.Embed(
-            title="🎮 Game Night Voting Open!",
-            description=f"Send me a **DM** with your choices.\nExample: {example}\nNo preference? Send `!pass` or `!vote pass` 🎲\n{skip_rule}\n\n{rules}{veto_text}",
+            title="🎮 Stemmen voor de gameavond is geopend!",
+            description=f"Stuur mij een **DM** met je keuzes.\nVoorbeeld: {example}\nGeen voorkeur? Stuur `!pass` of `!vote pass` 🎲\n{skip_rule}\n\n{rules}{veto_text}",
             color=discord.Color.green(),
         )
         # The RSVP question
         embed.add_field(
-            name="Are you gaming tonight?",
-            value="Select your expected time in the dropdown below.\nSelect ❌ if you can't make it.",
+            name="Speel je vanavond mee?",
+            value="Kies hieronder je verwachte aankomsttijd.\nKies ❌ als je niet kunt meedoen.",
             inline=False,
         )
         embed.add_field(
-            name="⚠️ Vote on time — protect your veto",
-            value=("Joining? Vote before **10 minutes before the earliest start time**.\n"
-                   "A warning is sent 30 minutes before the start. Late arrivals get at least 10 minutes after their warning.\n"
-                   "No vote by your deadline? Next game night you attend, you lose your **negative vote** "
-                   "and your first choice counts for **2 instead of 3 points** in weighted mode. "
-                   "An accepted `!pass` counts; no automatic skip is charged."),
+            name="⚠️ Stem op tijd — voorkom een straf",
+            value=("Speel je mee? Stem uiterlijk **10 minuten vóór de vroegste starttijd**.\n"
+                   "Je krijgt 30 minuten vóór de start een waarschuwing. Late aanmelders krijgen minstens 10 minuten na hun waarschuwing.\n"
+                   "Niet op tijd gestemd? De volgende gameavond waarop je aanwezig bent, vervalt je **negatieve stem** "
+                   "en telt je eerste keuze voor **2 in plaats van 3 punten** bij gewogen stemmen. "
+                   "Een geaccepteerde `!pass` telt ook; er wordt nooit automatisch een pass afgetrokken."),
             inline=False,
         )
 
@@ -1183,11 +1312,12 @@ class GameNight(commands.Cog):
     @gamenight.command(name="open")
     @commands.admin_or_permissions(administrator=True)
     async def gn_open(self, ctx):
+        """Open een nieuwe stemronde voor de gameavond."""
         try:
             await self._do_open_vote(ctx.channel, trigger_message=ctx.message)
         except ConfigBusyError:
             log.exception("Cannot open GameNight: Config lock is blocked")
-            await ctx.send("⚠️ GameNight storage is blocked. Restart the entire bot (not just this cog), then try again. Your saved data does not need to be reset.")
+            await ctx.send("⚠️ De GameNight-opslag is geblokkeerd. Herstart de volledige bot (niet alleen deze cog) en probeer opnieuw. Je opgeslagen gegevens hoeven niet gewist te worden.")
 
     async def _do_close_vote(self, channel: discord.TextChannel):
         """Shared logic for closing a vote session (used by !gn close and the Close Vote button)."""
@@ -1196,19 +1326,12 @@ class GameNight(commands.Cog):
                 return
 
             self.is_open = False
+            await self._clear_completion_message()
             await self.config.is_open.set(False)
             await self._sync_penalty_warning(clear=True)
             self.all_voted_notified = False
             self.too_many_notified = False
 
-            # Remove view from the "all votes in" message if still present
-            if self._all_voted_msg:
-                try:
-                    await self._all_voted_msg.edit(view=None)
-                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                    pass
-                self._all_voted_msg = None
-            
             # Remove view from vote message to prevent further RSVPs
             vote_channel, msg = await self._get_or_restore_vote_message()
             if msg:
@@ -1217,7 +1340,7 @@ class GameNight(commands.Cog):
                 except discord.NotFound:
                     pass
                     
-            closing_msg = await channel.send("🛑 **Voting is closed!** calculating results...")
+            closing_msg = await channel.send("🛑 **De stemming is gesloten!** De uitslag wordt berekend...")
             await self._track(closing_msg)
             await self._show_results(channel, finalize=True)
             await self._finish_veto_penalties(channel)
@@ -1247,21 +1370,23 @@ class GameNight(commands.Cog):
     @gamenight.command(name="close")
     @commands.admin_or_permissions(administrator=True)
     async def gn_close(self, ctx):
+        """Sluit de stemming en publiceer de uitslag."""
         if not self.is_open:
-            return await ctx.send("⛔ Voting is already closed.")
+            return await ctx.send("⛔ De stemming is al gesloten.")
         await self._track(ctx.message)  # Track the !gn close command itself
         await self._do_close_vote(ctx.channel)
 
     @commands.command()
     async def vote(self, ctx, *, games_input: str):
+        """Stem via DM: !vote Minecraft, Fortnite, Palworld. Voeg eventueel # Roblox toe als veto."""
         if ctx.guild is not None:
             await ctx.message.delete(delay=1)
             return await ctx.send(
-                f"{ctx.author.mention}, please send this in a DM! 🤫", delete_after=5
+                f"{ctx.author.mention}, stuur dit alsjeblieft in een DM! 🤫", delete_after=5
             )
 
         if not self.is_open:
-            return await ctx.send("⛔ Voting is currently closed.")
+            return await ctx.send("⛔ De stemming is momenteel gesloten.")
 
         # Check if player doesn't care / passes on voting
         pass_keywords = {
@@ -1281,7 +1406,7 @@ class GameNight(commands.Cog):
 
         if "#" in games_input:
             if not veto_enabled:
-                return await ctx.send("⛔ Veto mode is disabled. You cannot use `#` today.")
+                return await ctx.send("⛔ Veto is uitgeschakeld. Je kunt vandaag geen `#` gebruiken.")
             if penalized:
                 return await ctx.send(embed=self._veto_blocked_embed())
 
@@ -1320,28 +1445,28 @@ class GameNight(commands.Cog):
                         break
 
         if not clean_pos_games and not clean_neg_game:
-            return await ctx.send("I found no valid games. Usage: `!vote Game1, Game2 # BadGame`")
+            return await ctx.send("Geen geldige games gevonden. Gebruik: `!vote Minecraft, Fortnite # Palworld`")
 
         self.votes[ctx.author.id] = (clean_pos_games, clean_neg_game)
         await self.config.votes.set({str(k): v for k, v in self.votes.items()})
 
-        msg = "✅ **Votes Received!**\n"
+        msg = "✅ **Stemmen ontvangen!**\n"
         if corrections:
-            msg += "\n🪄 *Autocorrect:* " + ", ".join(corrections) + "\n\n"
+            msg += "\n🪄 *Automatisch gecorrigeerd:* " + ", ".join(corrections) + "\n\n"
 
-        msg += "**Your list:**\n"
+        msg += "**Jouw keuzes:**\n"
         for i, game in enumerate(clean_pos_games):
             if weighted_mode:
                 points = 2 if penalized and i == 0 else 3 - i
-                msg += f"#{i+1} **{game}** (+{points} pts)\n"
+                msg += f"#{i+1} **{game}** (+{points} punten)\n"
             else:
-                msg += f"- **{game}** (+1 pt)\n"
+                msg += f"- **{game}** (+1 punt)\n"
 
         if clean_neg_game:
-            msg += f"💀 **{clean_neg_game}** (-1 pt)\n"
+            msg += f"💀 **{clean_neg_game}** (-1 punt)\n"
         if penalized:
-            msg += ("\n🔒 **Voting penalty active:** no negative vote; "
-                    "your first choice is worth 2 instead of 3 points in weighted mode.\n")
+            msg += ("\n🔒 **Stemstraf actief:** geen negatieve stem; "
+                    "je eerste keuze telt voor 2 in plaats van 3 punten bij gewogen stemmen.\n")
 
         # ── Personal warning: flag games that don't fit the current group size ──
         player_count = await self._get_rsvp_count()
@@ -1350,32 +1475,15 @@ class GameNight(commands.Cog):
             for game in clean_pos_games:
                 max_p = GAMES.get(game, {}).get("max_players")
                 if max_p is not None and player_count > max_p:
-                    bad_games.append(f"**{game}** (max {max_p} players)")
+                    bad_games.append(f"**{game}** (max {max_p} spelers)")
             if bad_games:
                 msg += (
-                    f"\n⚠️ **Heads up!** With **{player_count} players** present tonight, "
-                    f"these votes might not be a great idea:\n"
+                    f"\n⚠️ **Let op!** Met **{player_count} aanwezige spelers** vanavond "
+                    f"zijn deze games mogelijk minder geschikt:\n"
                     + "\n".join(f"🚫 {g}" for g in bad_games)
                 )
 
         await ctx.send(msg)
-
-        # ── Late vote: notify the channel if "all votes in" was already announced ──
-        if self.all_voted_notified and self.vote_channel:
-            self.all_voted_notified = False  # Reset so it fires again once everyone is done
-            total_votes = len(self.votes)
-            embed = discord.Embed(
-                title="🔄 Vote count updated!",
-                description=(
-                    f"**{ctx.author.display_name}** just submitted a vote after the "
-                    f"\"all votes in\" notification.\n"
-                    f"Total votes received: **{total_votes}**\n\n"
-                    "Hold off on `!gn close` — waiting for everyone to be done again."
-                ),
-                color=discord.Color.yellow(),
-            )
-            late_msg = await self.vote_channel.send(embed=embed)
-            await self._track(late_msg)
 
         # Update the RSVP embed to reflect the player's updated voting status (🎮 emoji)
         await self._update_rsvp_embed()
@@ -1385,30 +1493,35 @@ class GameNight(commands.Cog):
 
     @commands.command(name="pass", aliases=["dontcare", "nopref"])
     async def pass_vote(self, ctx):
-        """Register that you are playing but don't care what game is played."""
+        """Geef aan dat je meespeelt zonder voorkeur voor een game."""
         if ctx.guild is not None:
             await ctx.message.delete(delay=1)
             return await ctx.send(
-                f"{ctx.author.mention}, please send this in a DM! 🤫", delete_after=5
+                f"{ctx.author.mention}, stuur dit alsjeblieft in een DM! 🤫", delete_after=5
             )
 
         if not self.is_open:
-            return await ctx.send("⛔ Voting is currently closed.")
+            return await ctx.send("⛔ De stemming is momenteel gesloten.")
 
         await self._register_pass(ctx)
 
     @gamenight.command(name="pass", aliases=["dontcare", "nopref"])
     async def gn_pass_cmd(self, ctx):
-        """Register that you are playing but don't care what game is played."""
+        """Geef aan dat je meespeelt zonder voorkeur voor een game."""
+        if ctx.guild is not None:
+            await ctx.message.delete(delay=1)
+            return await ctx.send(
+                f"{ctx.author.mention}, stuur dit alsjeblieft in een DM! 🤫", delete_after=5
+            )
         if not self.is_open:
-            return await ctx.send("⛔ Voting is currently closed.")
+            return await ctx.send("⛔ De stemming is momenteel gesloten.")
 
         await self._register_pass(ctx)
 
     @gamenight.command(name="skiplimit")
     @commands.is_owner()
     async def gn_skiplimit(self, ctx, value: str = None):
-        """Owner only: show/set monthly skips. Use a number, 0 to block, or off for unlimited."""
+        """Alleen voor de eigenaar: bekijk of wijzig de maandlimiet voor passen. Gebruik een getal, 0 om te blokkeren of off voor onbeperkt."""
         if value is not None:
             value = value.strip().lower()
             if value == "off":
@@ -1416,11 +1529,11 @@ class GameNight(commands.Cog):
             elif value.isascii() and value.isdigit() and len(value) <= 6:
                 limit = int(value)
             else:
-                return await ctx.send("❌ Use `!gn skiplimit <number>` (0–999999), or `!gn skiplimit off` for unlimited skips.")
+                return await ctx.send("❌ Gebruik `!gn skiplimit <aantal>` (0–999999), of `!gn skiplimit off` voor onbeperkt passen.")
             await self.config.skip_limit.set(limit)
         limit = await self.config.skip_limit()
-        status = "unlimited" if limit is None else f"{limit} per player per calendar month"
-        await ctx.send(f"🎲 Skip limit: **{status}**. Saved across reboots. Previous skips still count; an accepted skip in the current session remains valid.")
+        status = "onbeperkt" if limit is None else f"{limit} per speler per kalendermaand"
+        await ctx.send(f"🎲 Passlimiet: **{status}**. Blijft bewaard na een herstart. Eerdere passes blijven meetellen; een geaccepteerde pass in deze ronde blijft geldig.")
         if value is not None:
             await self._update_rsvp_embed()
 
@@ -1428,13 +1541,13 @@ class GameNight(commands.Cog):
         """Use the same local calendar as the game-night scheduler."""
         dates = [datetime.fromisoformat(value).date() for value in history]
         if limit is not None and sum(d.year == today.year and d.month == today.month for d in dates) >= limit:
-            return f"⛔ Your monthly skip limit is {limit} and has been reached. Please vote for a game."
+            return f"⛔ Je maandlimiet van {limit} passes is bereikt. Stem op een game."
         return None
 
     async def _register_pass(self, ctx):
         """Helper to register a player as present without voting preferences."""
         if not self.is_open:
-            return await ctx.send("⛔ Voting is currently closed.")
+            return await ctx.send("⛔ De stemming is momenteel gesloten.")
         uid = str(ctx.author.id)
         today = datetime.now().date()
         rejection = None
@@ -1459,16 +1572,16 @@ class GameNight(commands.Cog):
         has_rsvpd = str(ctx.author.id) in players and players[str(ctx.author.id)] != "No"
 
         msg = (
-            "🎲 **Your vote is set to 'No preference / Don't care'!**\n"
-            "You are counted as attending, but haven't voted for specific games.\n"
-            "We won't have to wait for your vote anymore. Have fun tonight! 🥳"
+            "🎲 **Je stem staat op 'Geen voorkeur'!**\n"
+            "Je pass is geregistreerd, zonder voorkeur voor specifieke games.\n"
+            "We hoeven niet meer op je stem te wachten. Veel plezier vanavond! 🥳"
         )
-        allowance = "unlimited" if limit is None else str(limit)
-        msg += f"\n\nSkips used this month: **{used}/{allowance}**. Changing your vote does not refund a skip."
+        allowance = "onbeperkt" if limit is None else str(limit)
+        msg += f"\n\nGebruikte passes deze maand: **{used}/{allowance}**. Je stem wijzigen geeft geen pass terug."
         if not has_rsvpd:
-            msg += "\n\n⚠️ *Don't forget to select your expected arrival time in the gamenight channel dropdown!*"
+            msg += "\n\n⚠️ *Vergeet niet je verwachte aankomsttijd te kiezen in het keuzemenu in het gameavondkanaal!*"
         else:
-            msg += "\n\n*(Change your mind? You can still submit votes anytime with `!vote Game1, Game2`)*"
+            msg += "\n\n*(Toch een voorkeur? Je kunt nog stemmen met `!vote Minecraft, Fortnite`)*"
 
         await ctx.send(msg)
 
@@ -1481,8 +1594,9 @@ class GameNight(commands.Cog):
     @gamenight.command(name="reset")
     @commands.admin_or_permissions(administrator=True)
     async def gn_reset(self, ctx):
-        """Reset the current voting session completely."""
+        """Wis de huidige stemronde. Geschiedenis, passverbruik en openstaande straffen blijven bewaard."""
         self.is_open = False
+        await self._clear_completion_message()
         await self._sync_penalty_warning(clear=True)
         # Reset cancels a session; it must not count as serving a veto penalty.
         await self.config.active_veto_penalties.set([])
@@ -1507,13 +1621,6 @@ class GameNight(commands.Cog):
         await self.config.reminder_time.set(None)
         self._smart_reminder_sent = False
 
-        if self._all_voted_msg:
-            try:
-                await self._all_voted_msg.edit(view=None)
-            except Exception:
-                pass
-            self._all_voted_msg = None
-        
         if self._cleanup_task and not self._cleanup_task.done():
             self._cleanup_task.cancel()
         if self._auto_close_task and not self._auto_close_task.done():
@@ -1524,18 +1631,18 @@ class GameNight(commands.Cog):
             self._smart_reminder_task.cancel()
         await self.config.auto_close_time.set(None)
             
-        await ctx.send("🧹 **Gamenight has been fully reset.** (Game history remains intact).")
+        await ctx.send("🧹 **De stemronde is gewist.** Geschiedenis, passverbruik en openstaande straffen blijven bewaard.")
 
     @gamenight.command(name="cleanup")
     @commands.admin_or_permissions(administrator=True)
     async def gn_cleanup(self, ctx, time_str: str):
-        """Set how long before voting messages are deleted (e.g. 1h, 30m)."""
+        """Stel in na hoeveel tijd de stemberichten worden opgeruimd (bijvoorbeeld 1h of 30m)."""
         time_str = time_str.lower().strip()
         hours = 0.0
         
         match = re.match(r'^(\d+(?:\.\d+)?)([hm])$', time_str)
         if not match:
-            return await ctx.send("❌ Invalid format. Please use something like `1h` or `30m`.")
+            return await ctx.send("❌ Ongeldige invoer. Gebruik bijvoorbeeld `1h` of `30m`.")
             
         val, unit = match.groups()
         val = float(val)
@@ -1546,12 +1653,12 @@ class GameNight(commands.Cog):
             hours = val / 60.0
             
         await self.config.cleanup_delay_hours.set(hours)
-        await ctx.send(f"⏱️ Cleanup delay updated to **{time_str}**.")
+        await ctx.send(f"⏱️ Opruimvertraging ingesteld op **{time_str}**.")
 
     @gamenight.command(name="remindertime")
     @commands.admin_or_permissions(administrator=True)
     async def gn_remindertime(self, ctx, time_str: str):
-        """Set how long after !gn open the fixed reminder fires (e.g. 2h, 30m, 0 to disable)."""
+        """Stel de vaste herinnering na !gn open in (bijvoorbeeld 2h, 30m of 0 om uit te schakelen)."""
         time_str = time_str.lower().strip()
         
         # Allow '0' to disable the fixed reminder
@@ -1560,13 +1667,13 @@ class GameNight(commands.Cog):
             await self.config.reminder_time.set(None)
             if self._reminder_task and not self._reminder_task.done():
                 self._reminder_task.cancel()
-            return await ctx.send("❌ Fixed reminder is now **disabled**.")
+            return await ctx.send("❌ De vaste herinnering is **uitgeschakeld**.")
         
         hours = 0.0
         
         match = re.match(r'^(\d+(?:\.\d+)?)([hm])$', time_str)
         if not match:
-            return await ctx.send("❌ Invalid format. Use e.g. `2h`, `30m`, or `0` to disable.")
+            return await ctx.send("❌ Ongeldige invoer. Gebruik `2h`, `30m` of `0` om uit te schakelen.")
             
         val, unit = match.groups()
         val = float(val)
@@ -1577,24 +1684,24 @@ class GameNight(commands.Cog):
             hours = val / 60.0
             
         await self.config.reminder_delay_hours.set(hours)
-        await ctx.send(f"⏱️ Fixed reminder set to **{time_str}** after `!gn open`.")
+        await ctx.send(f"⏱️ Vaste herinnering ingesteld op **{time_str}** na `!gn open`.")
     @gamenight.command(name="smartreminder")
     @commands.admin_or_permissions(administrator=True)
     async def gn_smartreminder(self, ctx, *, args: str = None):
-        """Configure the smart reminder that fires before the earliest RSVP time.
+        """Stel de slimme herinnering vóór de vroegste aankomsttijd in.
         
-        Usage:
-            !gn smartreminder 1h      — Set offset to 1 hour before earliest RSVP
-            !gn smartreminder 30m     — Set offset to 30 minutes before earliest RSVP
-            !gn smartreminder on      — Enable smart reminder
-            !gn smartreminder off     — Disable smart reminder
-            !gn smartreminder         — Show current settings
+        Gebruik:
+            !gn smartreminder 1h      — Herinner 1 uur vóór de vroegste aankomsttijd
+            !gn smartreminder 30m     — Herinner 30 minuten vóór de vroegste aankomsttijd
+            !gn smartreminder on      — Schakel de slimme herinnering in
+            !gn smartreminder off     — Schakel de slimme herinnering uit
+            !gn smartreminder         — Toon de huidige instellingen
         """
         if args is None:
-            # Show current settings
+            # Toon de huidige instellingen
             enabled = await self.config.smart_reminder_enabled()
             offset = await self.config.smart_reminder_offset_minutes()
-            status = "✅ ON" if enabled else "❌ OFF"
+            status = "✅ AAN" if enabled else "❌ UIT"
             
             if offset >= 60:
                 hours = offset // 60
@@ -1604,11 +1711,11 @@ class GameNight(commands.Cog):
                 offset_str = f"{offset}m"
             
             await ctx.send(
-                f"🔔 **Smart Reminder**\n"
+                f"🔔 **Slimme herinnering**\n"
                 f"Status: {status}\n"
-                f"Offset: **{offset_str}** before the earliest RSVP time\n\n"
-                f"Use `!gn smartreminder 1h` to set the offset,\n"
-                f"`!gn smartreminder on/off` to enable/disable."
+                f"Tijd vooraf: **{offset_str}** vóór de vroegste aankomsttijd\n\n"
+                f"Gebruik `!gn smartreminder 1h` om de tijd vooraf in te stellen,\n"
+                f"`!gn smartreminder on/off` om in of uit te schakelen."
             )
             return
         
@@ -1617,19 +1724,19 @@ class GameNight(commands.Cog):
         if args == "on":
             await self.config.smart_reminder_enabled.set(True)
             await self._reschedule_smart_reminder()
-            return await ctx.send("✅ Smart Reminder is now **ON**.")
+            return await ctx.send("✅ De slimme herinnering staat **AAN**.")
         
         if args == "off":
             await self.config.smart_reminder_enabled.set(False)
             # Cancel running smart reminder
             if self._smart_reminder_task and not self._smart_reminder_task.done():
                 self._smart_reminder_task.cancel()
-            return await ctx.send("❌ Smart Reminder is now **OFF**.")
+            return await ctx.send("❌ De slimme herinnering staat **UIT**.")
         
         # Parse time offset
         match = re.match(r'^(\d+(?:\.\d+)?)([hm])$', args)
         if not match:
-            return await ctx.send("❌ Invalid format. Use e.g. `1h`, `30m`, `on` or `off`.")
+            return await ctx.send("❌ Ongeldige invoer. Gebruik `1h`, `30m`, `on` of `off`.")
         
         val, unit = match.groups()
         val = float(val)
@@ -1640,7 +1747,7 @@ class GameNight(commands.Cog):
             minutes = int(val)
         
         if minutes < 1:
-            return await ctx.send("❌ The offset must be at least 1 minute.")
+            return await ctx.send("❌ De tijd vooraf moet minstens 1 minuut zijn.")
         
         await self.config.smart_reminder_offset_minutes.set(minutes)
         
@@ -1651,7 +1758,7 @@ class GameNight(commands.Cog):
         else:
             display = f"{minutes}m"
         
-        await ctx.send(f"🔔 Smart Reminder offset set to **{display}** before the earliest RSVP time.")
+        await ctx.send(f"🔔 Slimme herinnering ingesteld op **{display}** vóór de vroegste aankomsttijd.")
 
         # Reschedule if a session is currently open
         if self.is_open:
@@ -1660,39 +1767,41 @@ class GameNight(commands.Cog):
     @gamenight.command(name="remind")
     @commands.admin_or_permissions(administrator=True)
     async def gn_remind(self, ctx):
-        """Manually trigger a voting reminder to all RSVP'd players who haven't voted yet."""
+        """Stuur handmatig een stemherinnering aan alle aanwezigen die nog niet gestemd hebben."""
         if not self.is_open:
-            return await ctx.send("⛔ Voting is currently closed.")
+            return await ctx.send("⛔ De stemming is momenteel gesloten.")
             
         players = await self.config.players()
         joining_players = {uid: t_val for uid, t_val in players.items() if t_val != "No"}
         missing_uids = await self._missing_voters(joining_players)
         
         if not missing_uids:
-            return await ctx.send("✅ Nobody is waiting to vote: all attending players have voted, passed or received a deadline penalty.")
+            return await ctx.send("✅ Niemand hoeft nog te stemmen: alle aanwezigen hebben gestemd, gepast of een deadline-straf gekregen.")
             
         pings = ", ".join(f"<@{uid}>" for uid in missing_uids)
         embed = discord.Embed(
-            title="⏳ Voting Reminder!",
+            title="⏳ Vergeet niet te stemmen!",
             description=(
                 f"Hey {pings},\n\n"
-                f"You have RSVP'd for game night tonight but haven't submitted your votes yet!\n"
-                f"Please send me a **DM** with your choices so we can decide what to play.\n\n"
-                f"Example: `!vote Fortnite, Palworld` 🤫"
+                f"Je staat als aanwezig voor vanavond, maar hebt nog niet gestemd!\n"
+                f"Stuur mij een **DM** met je keuzes, zodat we kunnen bepalen wat we spelen.\n\n"
+                f"Voorbeeld: `!vote Fortnite, Palworld` 🤫"
             ),
             color=discord.Color.yellow(),
         )
         reminder_msg = await ctx.send(embed=embed)
         await self._track(reminder_msg)
         await self._track(ctx.message)
+        await self._send_temporary_ping(ctx.channel, missing_uids)
 
     @gamenight.command(name="status")
     async def gn_status(self, ctx):
+        """Bekijk hoeveel stemmen er zijn en op wie we nog wachten."""
         if not self.is_open:
-            return await ctx.send("The voting is currently closed.")
+            return await ctx.send("De stemming is momenteel gesloten.")
 
         count = len(self.votes)
-        msg_text = f"🗳️ We currently have **{count}** votes.\n"
+        msg_text = f"🗳️ Er zijn momenteel **{count}** stemmen.\n"
 
         # Check who is still missing
         players = await self.config.players()
@@ -1705,24 +1814,25 @@ class GameNight(commands.Cog):
                     user = self.bot.get_user(int(uid))
                     name = user.display_name if user else f"<@{uid}>"
                     missing_names.append(name)
-                msg_text += f"\n⏳ **Still waiting for:** {', '.join(missing_names)}"
+                msg_text += f"\n⏳ **We wachten nog op:** {', '.join(missing_names)}"
             else:
-                msg_text += "\n✅ **All RSVP'd players have voted, passed or received a deadline penalty.**"
+                msg_text += "\n✅ **Alle aanwezigen hebben gestemd, gepast of een deadline-straf gekregen.**"
 
         await ctx.send(msg_text)
 
     @gamenight.command(name="history")
     async def gn_history(self, ctx):
+        """Bekijk welke games de meeste stemrondes hebben gewonnen."""
         stats = await self.config.game_wins()
         sessions = await self.config.total_sessions()
 
         if not stats:
-            return await ctx.send("No history available yet.")
+            return await ctx.send("Er is nog geen geschiedenis beschikbaar.")
 
         sorted_stats = sorted(stats.items(), key=lambda item: item[1], reverse=True)
 
-        embed = discord.Embed(title="📜 Game Night History", color=discord.Color.purple())
-        desc = f"*Total sessions: {sessions}*\n\n"
+        embed = discord.Embed(title="📜 Geschiedenis van gameavonden", color=discord.Color.purple())
+        desc = f"*Totaal aantal rondes: {sessions}*\n\n"
 
         for i, (game, wins) in enumerate(sorted_stats, 1):
             if i == 1:
@@ -1733,7 +1843,7 @@ class GameNight(commands.Cog):
                 icon = "🥉"
             else:
                 icon = "🔹"
-            desc += f"{icon} **{game}**: won {wins}x\n"
+            desc += f"{icon} **{game}**: {wins}x gewonnen\n"
             if i >= 10:
                 break
 
@@ -1806,23 +1916,23 @@ class GameNight(commands.Cog):
                     data["session_result"] = json.dumps(result)
 
         if not result["ranking"]:
-            text = ("🎲 Everyone has no preference. No winning game was selected."
-                    if result["total"] else "No votes received from attending players.")
+            text = ("🎲 Iedereen heeft gepast. Er is geen winnende game gekozen."
+                    if result["total"] else "Geen stemmen ontvangen van aanwezige spelers.")
             await self._track(await channel.send(text))
             return
 
-        title = "🏆 The Results" if result["winner"] else "🗳️ Current standings (not final)"
+        title = "🏆 De uitslag" if result["winner"] else "🗳️ Tussenstand (nog niet definitief)"
         embed = discord.Embed(title=title, color=discord.Color.gold())
         desc = ""
         for i, (game, score, pos_votes, neg_votes) in enumerate(result["ranking"], 1):
 
             emoji = ["🥇", "🥈", "🥉"][i - 1] if i <= 3 else f"**#{i}**"
 
-            vote_text = f"{pos_votes} up"
+            vote_text = f"{pos_votes} positief"
             if neg_votes > 0:
-                vote_text += f", {neg_votes} down 💀"
+                vote_text += f", {neg_votes} negatief 💀"
 
-            desc += f"{emoji} **{game}**\n╚ **{score} pts** ({vote_text})\n\n"
+            desc += f"{emoji} **{game}**\n╚ **{score} punten** ({vote_text})\n\n"
             if i >= 10:
                 break
 
@@ -1831,9 +1941,9 @@ class GameNight(commands.Cog):
         total = result["total"]
         passed_count = total - voted_count
         if passed_count > 0:
-            embed.set_footer(text=f"Total: {total} players ({voted_count} voted, {passed_count} 🎲 don't care)")
+            embed.set_footer(text=f"Totaal: {total} spelers ({voted_count} gestemd, {passed_count} 🎲 geen voorkeur)")
         else:
-            embed.set_footer(text=f"Total: {total} voters.")
+            embed.set_footer(text=f"Totaal: {total} stemmers.")
         results_msg = await channel.send(embed=embed)
         await self._track(results_msg)
 
@@ -1842,19 +1952,20 @@ class GameNight(commands.Cog):
             return
         if len(result["potential_winners"]) > 1:
             embed_tie = discord.Embed(
-                title="🎰 SUDDEN DEATH",
-                description=f"The wheel stops on...\n# **🎉 {final_winner} 🎉**",
+                title="🎰 LOTING BIJ GELIJKSPEL",
+                description=f"Het rad stopt op...\n# **🎉 {final_winner} 🎉**",
                 color=discord.Color.red(),
             )
             tie_result_msg = await channel.send(embed=embed_tie)
             await self._track(tie_result_msg)
         else:
-            winner_msg = await channel.send(f"🎉 The winner is clear: **{final_winner}**!")
+            winner_msg = await channel.send(f"🎉 De winnaar is: **{final_winner}**!")
             await self._track(winner_msg)
 
     @gamenight.command(name="results")
     @commands.admin_or_permissions(administrator=True)
     async def gn_results(self, ctx):
+        """Bekijk de tussenstand of de opgeslagen definitieve uitslag."""
         await self._show_results(ctx.channel)
 
     # ── Auto-Open Loop ──────────────────────────────────────────────────
@@ -1920,84 +2031,84 @@ class GameNight(commands.Cog):
     @gamenight.group(name="autoopen", invoke_without_command=True)
     @commands.admin_or_permissions(administrator=True)
     async def gn_autoopen(self, ctx):
-        """Show current auto-open settings."""
+        """Toon de instellingen voor automatisch openen."""
         enabled = await self.config.auto_open_enabled()
         auto_time = await self.config.auto_open_time()
         channel_id = await self.config.auto_open_channel_id()
         auto_days = await self.config.auto_open_days()
 
-        status = "✅ ON" if enabled else "❌ OFF"
+        status = "✅ AAN" if enabled else "❌ UIT"
 
-        day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-        days_str = ", ".join(day_names[d] for d in sorted(auto_days)) if auto_days else "None"
+        day_names = ["maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag", "zondag"]
+        days_str = ", ".join(day_names[d] for d in sorted(auto_days)) if auto_days else "Geen"
 
         if channel_id:
             channel = self.bot.get_channel(channel_id)
-            channel_str = channel.mention if channel else f"ID: {channel_id} (not found)"
+            channel_str = channel.mention if channel else f"ID: {channel_id} (niet gevonden)"
         else:
-            channel_str = "**Not configured** — use `!gn autoopen channel #channel`"
+            channel_str = "**Niet ingesteld** — gebruik `!gn autoopen channel #kanaal`"
 
         embed = discord.Embed(
-            title="⏰ Auto-Open Settings",
+            title="⏰ Instellingen voor automatisch openen",
             color=discord.Color.blue(),
         )
         embed.add_field(name="Status", value=status, inline=True)
-        embed.add_field(name="Time", value=f"**{auto_time}**", inline=True)
-        embed.add_field(name="Days", value=days_str, inline=False)
-        embed.add_field(name="Channel", value=channel_str, inline=False)
-        embed.set_footer(text="Use !gn autoopen on/off/time/channel to adjust settings.")
+        embed.add_field(name="Tijd", value=f"**{auto_time}**", inline=True)
+        embed.add_field(name="Dagen", value=days_str, inline=False)
+        embed.add_field(name="Kanaal", value=channel_str, inline=False)
+        embed.set_footer(text="Gebruik !gn autoopen on/off/time/channel om de instellingen te wijzigen.")
 
         await ctx.send(embed=embed)
 
     @gn_autoopen.command(name="on")
     @commands.admin_or_permissions(administrator=True)
     async def gn_autoopen_on(self, ctx):
-        """Enable auto-open."""
+        """Schakel automatisch openen in."""
         channel_id = await self.config.auto_open_channel_id()
         if not channel_id:
             return await ctx.send(
-                "❌ Please set a channel first with `!gn autoopen channel #channel` "
-                "before enabling auto-open."
+                "❌ Stel eerst een kanaal in met `!gn autoopen channel #kanaal` "
+                "voordat je automatisch openen inschakelt."
             )
         await self.config.auto_open_enabled.set(True)
         auto_time = await self.config.auto_open_time()
-        await ctx.send(f"✅ Auto-open is now **ON**. The voting session will open automatically at **{auto_time}**.")
+        await ctx.send(f"✅ Automatisch openen staat **AAN**. De stemming opent automatisch om **{auto_time}**.")
 
     @gn_autoopen.command(name="off")
     @commands.admin_or_permissions(administrator=True)
     async def gn_autoopen_off(self, ctx):
-        """Disable auto-open."""
+        """Schakel automatisch openen uit."""
         await self.config.auto_open_enabled.set(False)
-        await ctx.send("❌ Auto-open is now **OFF**.")
+        await ctx.send("❌ Automatisch openen staat **UIT**.")
 
     @gn_autoopen.command(name="time")
     @commands.admin_or_permissions(administrator=True)
     async def gn_autoopen_time(self, ctx, time_str: str):
-        """Set the auto-open time (HH:MM format, e.g. 18:00 or 19:30)."""
+        """Stel het tijdstip voor automatisch openen in (UU:MM, bijvoorbeeld 18:00 of 19:30)."""
         match = re.match(r'^(\d{1,2}):(\d{2})$', time_str.strip())
         if not match:
-            return await ctx.send("❌ Invalid format. Please use `HH:MM`, e.g. `18:00` or `19:30`.")
+            return await ctx.send("❌ Ongeldige invoer. Gebruik `UU:MM`, bijvoorbeeld `18:00` of `19:30`.")
 
         hour, minute = int(match.group(1)), int(match.group(2))
         if hour > 23 or minute > 59:
-            return await ctx.send("❌ Invalid time. Hours must be 0-23, minutes 0-59.")
+            return await ctx.send("❌ Ongeldige tijd. Uren moeten 0–23 zijn, minuten 0–59.")
 
         formatted = f"{hour:02d}:{minute:02d}"
         await self.config.auto_open_time.set(formatted)
-        await ctx.send(f"⏰ Auto-open time set to **{formatted}**.")
+        await ctx.send(f"⏰ Automatisch openen ingesteld op **{formatted}**.")
 
     @gn_autoopen.command(name="channel")
     @commands.admin_or_permissions(administrator=True)
     async def gn_autoopen_channel(self, ctx, channel: discord.TextChannel):
-        """Set the channel where auto-open posts the voting embed."""
+        """Stel het kanaal in waarin de stemming automatisch wordt geopend."""
         await self.config.auto_open_channel_id.set(channel.id)
-        await ctx.send(f"📢 Auto-open channel set to {channel.mention}.")
+        await ctx.send(f"📢 Kanaal voor automatisch openen ingesteld op {channel.mention}.")
 
     # ── Debug Time Command ──────────────────────────────────────────────
     @gamenight.command(name="debugtime")
     @commands.admin_or_permissions(administrator=True)
     async def gn_debugtime(self, ctx):
-        """Show timezone and scheduling debug information."""
+        """Toon informatie over de tijdzone en planning voor probleemoplossing."""
         now_utc = datetime.now(timezone.utc)
         now_local = datetime.now()
         utc_offset = now_local - now_utc.replace(tzinfo=None)
@@ -2009,18 +2120,18 @@ class GameNight(commands.Cog):
         abs_mins = int((abs(offset_hours) - abs_hours) * 60)
         offset_str = f"{sign}{abs_hours:02d}:{abs_mins:02d}"
 
-        day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        day_names = ["maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag", "zondag"]
         today_name = day_names[now_local.weekday()]
 
         # Auto-open info
         enabled = await self.config.auto_open_enabled()
         auto_time = await self.config.auto_open_time()
         auto_days = await self.config.auto_open_days()
-        auto_days_str = ", ".join(day_names[d] for d in sorted(auto_days)) if auto_days else "None"
+        auto_days_str = ", ".join(day_names[d] for d in sorted(auto_days)) if auto_days else "Geen"
         is_auto_day = now_local.weekday() in auto_days
 
         # Calculate next auto-open
-        next_open_str = "Disabled"
+        next_open_str = "Uitgeschakeld"
         if enabled and auto_days:
             try:
                 target_h, target_m = map(int, auto_time.split(":"))
@@ -2028,7 +2139,7 @@ class GameNight(commands.Cog):
                 check = now_local.replace(hour=target_h, minute=target_m, second=0, microsecond=0)
                 # If today is an auto-day and the time hasn't passed yet, it's today
                 if now_local.weekday() in auto_days and now_local < check:
-                    next_open_str = f"{today_name} {auto_time} (today)"
+                    next_open_str = f"{today_name} {auto_time} (vandaag)"
                 else:
                     # Search the next 7 days
                     for i in range(1, 8):
@@ -2039,46 +2150,46 @@ class GameNight(commands.Cog):
                             next_open_str = f"{future_name} {auto_time} ({future_date})"
                             break
             except (ValueError, AttributeError):
-                next_open_str = "⚠️ Could not calculate (invalid auto_open_time)"
+                next_open_str = "⚠️ Kan niet berekenen (ongeldige auto_open_time)"
 
         embed = discord.Embed(
-            title="🕵️ Debug: Time & Timezone",
+            title="🕵️ Diagnose: tijd en tijdzone",
             color=discord.Color.greyple(),
         )
         embed.add_field(
-            name="🕐 Times",
+            name="🕐 Tijden",
             value=(
                 f"**UTC:** {now_utc.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"**Local:** {now_local.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"**Offset:** UTC{offset_str}"
+                f"**Lokaal:** {now_local.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"**Tijdsverschil:** UTC{offset_str}"
             ),
             inline=False,
         )
         embed.add_field(
-            name="📅 Day",
+            name="📅 Dag",
             value=(
-                f"**Today:** {today_name} (weekday={now_local.weekday()})\n"
-                f"**Is auto-open day?** {'✅ Yes' if is_auto_day else '❌ No'}"
+                f"**Vandaag:** {today_name} (weekday={now_local.weekday()})\n"
+                f"**Dag voor automatisch openen?** {'✅ Ja' if is_auto_day else '❌ Nee'}"
             ),
             inline=False,
         )
         embed.add_field(
-            name="⏰ Auto-Open Config",
+            name="⏰ Automatisch openen",
             value=(
-                f"**Enabled:** {'✅' if enabled else '❌'}\n"
-                f"**Time:** {auto_time}\n"
-                f"**Days:** {auto_days_str}\n"
-                f"**Already opened today?** {'Yes' if self._auto_opened_date == now_local.strftime('%Y-%m-%d') else 'No'}"
+                f"**Ingeschakeld:** {'✅' if enabled else '❌'}\n"
+                f"**Tijd:** {auto_time}\n"
+                f"**Dagen:** {auto_days_str}\n"
+                f"**Vandaag al geopend?** {'Ja' if self._auto_opened_date == now_local.strftime('%Y-%m-%d') else 'Nee'}"
             ),
             inline=False,
         )
         embed.add_field(
-            name="📌 Next Auto-Open",
+            name="📌 Volgende automatische opening",
             value=next_open_str,
             inline=False,
         )
         embed.add_field(
-            name="🔧 System Info",
+            name="🔧 Systeeminformatie",
             value=(
                 f"**time.tzname:** {time.tzname}\n"
                 f"**time.timezone:** {time.timezone} sec ({time.timezone / 3600:.1f}h)\n"
@@ -2086,7 +2197,7 @@ class GameNight(commands.Cog):
             ),
             inline=False,
         )
-        embed.set_footer(text="If the offset is incorrect, the bot might be running in the wrong timezone.")
+        embed.set_footer(text="Als het tijdsverschil niet klopt, draait de bot mogelijk in de verkeerde tijdzone.")
 
         await ctx.send(embed=embed)
 
