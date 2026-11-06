@@ -65,6 +65,10 @@ GAMES = {
         "aliases": ["repo", "r.e.p.o", "repo game"],
         "max_players": 6,
     },
+        "Mimesis": {
+        "aliases": ["mimesis", "mime", "mimisis", "memesis", "meme", "mimi", "memesis"],
+        "max_players": 4,
+    },
     "Sea of Thieves": {
         "aliases": ["sot", "sea", "thieves", "seaofthieves"],
         "max_players": 4,
