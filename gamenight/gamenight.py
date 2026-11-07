@@ -10,11 +10,72 @@ import random
 import time
 import logging
 import json
+import ast
+import aiohttp
+from copy import deepcopy
+from urllib.parse import urlsplit, unquote
 from datetime import datetime, timedelta, timezone
 
 from .games import GAMES  # Separate game list
 
 log = logging.getLogger("red.gamenight")
+
+DEFAULT_GAMES_URL = "https://raw.githubusercontent.com/doctawaald/DocCogs/main/gamenight/games.py"
+
+
+def normalize_games_url(value):
+    """Accept public GitHub file links; downloads always use GitHub's raw host."""
+    parsed = urlsplit(value.strip().strip("<>"))
+    if parsed.scheme != "https" or parsed.username or parsed.password or parsed.port:
+        raise ValueError("Gebruik een HTTPS-link naar games.py op GitHub.")
+    parts = parsed.path.strip("/").split("/")
+    if parsed.hostname == "github.com" and len(parts) >= 5 and parts[2] in ("blob", "raw"):
+        parts.pop(2)
+    elif parsed.hostname != "raw.githubusercontent.com":
+        raise ValueError("Gebruik een GitHub-bestandslink of een raw.githubusercontent.com-link.")
+    if len(parts) < 4 or not parts[-1].endswith(".py") or any(
+            not part or unquote(part) in (".", "..") for part in parts):
+        raise ValueError("De link moet naar een Python-bestand wijzen, bijvoorbeeld gamenight/games.py.")
+    return "https://raw.githubusercontent.com/" + "/".join(parts)
+
+
+def validate_games(data):
+    if not isinstance(data, dict) or not data or len(data) > 1000:
+        raise ValueError("GAMES moet een dictionary met 1 tot 1000 games zijn.")
+    result = {}
+    names = set()
+    for name, details in data.items():
+        if not isinstance(name, str) or not name.strip() or len(name) > 150 or "\n" in name:
+            raise ValueError("Een gamenaam is leeg, te lang of bevat een nieuwe regel.")
+        name = name.strip()
+        if name.casefold() in names:
+            raise ValueError(f"Dubbele gamenaam: {name}.")
+        names.add(name.casefold())
+        if not isinstance(details, dict):
+            raise ValueError(f"Ongeldige gegevens voor {name}.")
+        aliases = details.get("aliases", [])
+        maximum = details.get("max_players")
+        if not isinstance(aliases, list) or len(aliases) > 100 or any(
+                not isinstance(alias, str) or not alias.strip() or len(alias) > 150 for alias in aliases):
+            raise ValueError(f"Ongeldige aliassen voor {name}.")
+        if maximum is not None and (type(maximum) is not int or maximum < 1):
+            raise ValueError(f"max_players voor {name} moet een positief geheel getal of None zijn.")
+        result[name] = {"aliases": list(dict.fromkeys(alias.strip().lower() for alias in aliases)),
+                        "max_players": maximum}
+    return result
+
+
+def parse_games_source(source):
+    """Read literal data only. Never import or execute the downloaded Python file."""
+    try:
+        tree = ast.parse(source)
+        assignments = [node for node in tree.body if isinstance(node, ast.Assign)
+                       and any(isinstance(target, ast.Name) and target.id == "GAMES" for target in node.targets)]
+        if len(assignments) != 1:
+            raise ValueError("Het bestand moet precies één GAMES-dictionary bevatten.")
+        return validate_games(ast.literal_eval(assignments[0].value))
+    except (SyntaxError, TypeError, RecursionError) as exc:
+        raise ValueError("games.py bevat ongeldige Python-gegevens.") from exc
 
 
 class ConfigBusyError(RuntimeError):
@@ -141,9 +202,6 @@ class CloseVoteView(discord.ui.View):
             except Exception:
                 pass
 
-# Build alias lookup once at import time
-GAME_ALIASES = {name: data["aliases"] for name, data in GAMES.items()}
-
 # Player count threshold for the "too many players" warning
 TOO_MANY_PLAYERS_THRESHOLD = 4
 
@@ -180,6 +238,8 @@ class GameNight(commands.Cog):
         self._rsvp_embed_lock = asyncio.Lock()
         self._penalty_warning_lock = asyncio.Lock()
         self._completion_lock = asyncio.Lock()
+        self._games_lock = asyncio.Lock()
+        self.games = deepcopy(GAMES)
 
         # Message tracking for auto-cleanup
         self.tracked_messages: list[discord.Message] = []
@@ -195,6 +255,12 @@ class GameNight(commands.Cog):
         # Database setup
         self.config = Config.get_conf(self, identifier=847372839210)
         default_global = {
+            "games_source": "https://raw.githubusercontent.com/doctawaald/DocCogs/main/gamenight/games.py",
+            "games_cache_json": None,
+            "games_cache_source": None,
+            "games_updated_at": None,
+            "games_last_error": None,
+            "session_games_json": None,
             "game_wins": {},
             "total_sessions": 0,
             "weighted_mode": True,
@@ -236,6 +302,61 @@ class GameNight(commands.Cog):
             "auto_opened_date": None
         }
         self.config.register_global(**default_global)
+
+    async def _download_games(self, url):
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, allow_redirects=False) as response:
+                if response.status != 200:
+                    raise ValueError(f"GitHub antwoordde met HTTP {response.status}.")
+                chunks = bytearray()
+                async for chunk in response.content.iter_chunked(16384):
+                    chunks.extend(chunk)
+                    if len(chunks) > 512_000:
+                        raise ValueError("games.py is groter dan 500 KB.")
+                return parse_games_source(chunks.decode("utf-8-sig"))
+
+    async def _restore_games(self):
+        cache = await self.config.games_cache_json()
+        active = await self.config.session_games_json() if self.is_open else None
+        try:
+            self.games = validate_games(json.loads(active or cache)) if active or cache else deepcopy(GAMES)
+        except (ValueError, TypeError):
+            self.games = deepcopy(GAMES)
+            log.exception("Invalid saved game list; using bundled games")
+        if self.is_open and not active:
+            await self.config.session_games_json.set(json.dumps(self.games))
+        await self._refresh_games()
+
+    async def _refresh_games(self, *, source=None, activate=False):
+        async with self._games_lock:
+            url = source or await self.config.games_source()
+            try:
+                url = normalize_games_url(url)
+                games = await self._download_games(url)
+            except (ValueError, UnicodeError, aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                error = str(exc) or "GitHub reageerde niet binnen 10 seconden."
+                await self.config.games_last_error.set(error[:500])
+                log.warning("Could not refresh games: %s", error)
+                # A new round can still use the most recently downloaded valid list.
+                if activate:
+                    cache = await self.config.games_cache_json()
+                    if cache:
+                        try:
+                            self.games = validate_games(json.loads(cache))
+                        except (ValueError, TypeError):
+                            pass
+                return False, error
+            async with self._config_transaction() as data:
+                if source:
+                    data["games_source"] = url
+                data["games_cache_json"] = json.dumps(games)
+                data["games_cache_source"] = url
+                data["games_updated_at"] = int(time.time())
+                data["games_last_error"] = None
+            if activate or not self.is_open:
+                self.games = games
+            return True, f"{len(games)} games opgehaald."
 
     @asynccontextmanager
     async def _config_transaction(self):
@@ -438,6 +559,7 @@ class GameNight(commands.Cog):
         
         raw_votes = await self.config.votes()
         self.votes = {int(k): v for k, v in raw_votes.items()}
+        await self._restore_games()
         
         # Restore auto-opened date so we don't double-open after a reboot
         self._auto_opened_date = await self.config.auto_opened_date()
@@ -1047,12 +1169,13 @@ class GameNight(commands.Cog):
         if not clean_input:
             return None, False
 
-        for official_name, aliases in GAME_ALIASES.items():
+        game_aliases = {name: details["aliases"] for name, details in self.games.items()}
+        for official_name, aliases in game_aliases.items():
             if clean_input == official_name.lower() or clean_input in aliases:
                 return official_name, False
 
-        all_possibilities = {name.lower(): name for name in GAME_ALIASES}
-        for name, aliases in GAME_ALIASES.items():
+        all_possibilities = {name.lower(): name for name in game_aliases}
+        for name, aliases in game_aliases.items():
             for a in aliases:
                 all_possibilities[a] = name
 
@@ -1178,6 +1301,85 @@ class GameNight(commands.Cog):
         """Beheer de gameavond, stemming, herinneringen en instellingen."""
         await ctx.send_help(ctx.command)
 
+    @gamenight.group(name="games", invoke_without_command=True)
+    async def gn_games(self, ctx):
+        """Bekijk bekende games met !gn games list. Je mag ook op andere games stemmen."""
+        await self._send_games_list(ctx)
+
+    @gn_games.command(name="list")
+    async def gn_games_list(self, ctx):
+        """Toon bekende games en hun maximale aantal spelers."""
+        await self._send_games_list(ctx)
+
+    async def _send_games_list(self, ctx):
+        explanation = (
+            "**Je mag op elke game stemmen, ook als die niet in deze lijst staat!**\n"
+            "Let bij andere games extra goed op de spelling. Gebruik samen dezelfde gamenaam, "
+            "zodat jullie stemmen bij elkaar worden opgeteld. Controleer ook je stembevestiging.\n"
+            "Stem via DM, bijvoorbeeld: `!vote Minecraft, Fortnite`.\n\n"
+            "**Game — maximaal aantal spelers**\n"
+            "*Onbekend/onbeperkt betekent dat er geen vaste limiet is opgegeven.*\n\n"
+        )
+        rows = []
+        for name, details in sorted(self.games.items(), key=lambda item: item[0].casefold()):
+            maximum = details["max_players"]
+            limit = f"{maximum} spelers" if maximum is not None else "onbekend/onbeperkt"
+            rows.append(f"• **{discord.utils.escape_markdown(name)}** — {limit}")
+        pages = []
+        page = explanation
+        for row in rows:
+            if len(page) + len(row) + 1 > 3800:
+                pages.append(page)
+                page = explanation
+            page += row + "\n"
+        pages.append(page)
+        for index, description in enumerate(pages, 1):
+            embed = discord.Embed(title="🎮 Gamelijst", description=description, color=discord.Color.green())
+            embed.set_footer(text=f"{len(self.games)} bekende games • Pagina {index}/{len(pages)}")
+            await ctx.send(embed=embed)
+
+    @gn_games.command(name="source")
+    @commands.is_owner()
+    async def gn_games_source(self, ctx, *, url: str = None):
+        """Alleen eigenaar: bekijk of wijzig de GitHub-bestandslink voor games.py."""
+        if url is None:
+            return await ctx.send(f"🔗 Huidige bron: <{await self.config.games_source()}>")
+        success, detail = await self._refresh_games(source=url)
+        if not success:
+            return await ctx.send(f"❌ Bron niet gewijzigd: {detail}")
+        suffix = " De nieuwe lijst wordt vanaf de volgende stemronde gebruikt." if self.is_open else " De lijst is nu actief."
+        await ctx.send(f"✅ Bron opgeslagen. {detail}{suffix}")
+
+    @gn_games.command(name="reload")
+    @commands.is_owner()
+    async def gn_games_reload(self, ctx):
+        """Alleen eigenaar: haal de nieuwste gamelijst van GitHub op."""
+        success, detail = await self._refresh_games()
+        if not success:
+            return await ctx.send(f"⚠️ Vernieuwen mislukt: {detail}\nDe laatst geldige lijst blijft beschikbaar.")
+        suffix = " De lopende ronde behoudt haar huidige lijst; de update geldt vanaf de volgende ronde." if self.is_open else " De lijst is nu actief."
+        await ctx.send(f"✅ {detail}{suffix}")
+
+    @gn_games.command(name="status")
+    @commands.is_owner()
+    async def gn_games_status(self, ctx):
+        """Alleen eigenaar: bekijk de bron, laatste update en eventuele downloadfout."""
+        data = await self.config.all()
+        updated = data["games_updated_at"]
+        last_update = f"<t:{updated}:f>" if updated else "Nog geen succesvolle download"
+        state = ("Opgeslagen lijst voor de lopende stemronde" if self.is_open else
+                 "Laatst opgehaalde lijst" if data["games_cache_json"] else "Meegeleverde lokale lijst")
+        description = (f"**Bron:** <{data['games_source']}>\n"
+                       f"**Laatste succesvolle update:** {last_update}\n"
+                       f"**Actieve lijst:** {state} ({len(self.games)} games)\n")
+        if data["games_last_error"]:
+            description += (f"\n⚠️ **Laatste download mislukt:** {data['games_last_error']}\n"
+                            "De bot gebruikt de laatst geldige lijst als reserve.")
+        if self.is_open:
+            description += "\nUpdates worden vanaf de volgende stemronde gebruikt."
+        await ctx.send(embed=discord.Embed(title="🔄 Status van de gamelijst", description=description,
+                                          color=discord.Color.green()))
+
     @gamenight.command(name="mode")
     @commands.admin_or_permissions(administrator=True)
     async def gn_mode(self, ctx):
@@ -1208,12 +1410,14 @@ class GameNight(commands.Cog):
         """
         # Replacing an open round is not completion of a penalty. Only recover
         # unfinished bookkeeping here when the previous round was closed.
+        await self._refresh_games(activate=True)
         await self._sync_penalty_warning(clear=True)
         if not self.is_open:
             await self._finish_veto_penalties(channel)
         await self._clear_completion_message()
         async with self._config_transaction() as data:
             data["penalty_session"] = str(time.time_ns())
+            data["session_games_json"] = json.dumps(self.games)
             data["all_voted_message"] = None
             data["completion_state_migrated"] = True
             data["penalty_warnings"] = {}
@@ -1473,7 +1677,7 @@ class GameNight(commands.Cog):
         if player_count is not None and player_count > 0:
             bad_games = []
             for game in clean_pos_games:
-                max_p = GAMES.get(game, {}).get("max_players")
+                max_p = self.games.get(game, {}).get("max_players")
                 if max_p is not None and player_count > max_p:
                     bad_games.append(f"**{game}** (max {max_p} spelers)")
             if bad_games:
